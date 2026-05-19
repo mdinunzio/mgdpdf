@@ -1,6 +1,7 @@
 /target
 **/*.rs.bk
 Cargo.lock.bak
+*.log
 
 # OS / editor
 Thumbs.db
