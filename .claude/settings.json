@@ -13,7 +13,8 @@
       "PowerShell(Copy-Item:*)",
       "PowerShell(Test-Path:*)",
       "Bash(grep:*)",
-      "Read(//c/Users/mdinu/**)"
+      "Read(//c/Users/mdinu/**)",
+      "PowerShell($proc = Start-Process -FilePath \".\\\\target\\\\debug\\\\mgdpdf.exe\" -ArgumentList \"tests\\\\fixtures\\\\hello.pdf\" -PassThru -RedirectStandardOutput stdout.log -RedirectStandardError stderr.log; Start-Sleep -Seconds 4; if \\(-not $proc.HasExited\\) { Write-Output \"OK: process is running \\(PID $\\($proc.Id\\)\\)\"; Stop-Process -Id $proc.Id -Force; Write-Output \"--- stderr ---\"; Get-Content stderr.log -ErrorAction SilentlyContinue; Write-Output \"--- stdout ---\"; Get-Content stdout.log -ErrorAction SilentlyContinue } else { Write-Output \"FAIL: process exited with code $\\($proc.ExitCode\\)\"; Write-Output \"--- stderr ---\"; Get-Content stderr.log -ErrorAction SilentlyContinue; Write-Output \"--- stdout ---\"; Get-Content stdout.log -ErrorAction SilentlyContinue }; Remove-Item stdout.log,stderr.log -ErrorAction SilentlyContinue)"
     ]
   }
 }
