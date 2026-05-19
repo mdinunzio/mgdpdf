@@ -12,7 +12,7 @@
 pub mod form_fill;
 pub mod hand;
 
-use egui::{Painter, Pos2, Ui};
+use egui::{Painter, Pos2, Sense, Ui};
 
 use crate::edit::{command::Command, EditSession, UndoStack};
 use crate::pdf::document::TextFieldWidget;
@@ -61,6 +61,15 @@ pub trait Tool {
     /// Receives a single page-scoped event. The default does nothing — most
     /// tools only care about a subset.
     fn on_event(&mut self, _page_index: usize, _event: ToolEvent, _ctx: &mut ToolCtx<'_>) {}
+
+    /// What kind of input the page background should accept while this tool
+    /// is active. Default is `hover` only — so click-drag passes through to
+    /// the surrounding `ScrollArea` and the user can pan/scroll. Tools that
+    /// need to detect clicks or drags on the bare page (free-text placement,
+    /// highlight selection, signature stamp) override to `click_and_drag`.
+    fn page_sense(&self) -> Sense {
+        Sense::hover()
+    }
 
     /// Draws the tool's non-interactive overlay for one visible page. Called
     /// after the page bitmap is painted, with `painter` clipped to the page's

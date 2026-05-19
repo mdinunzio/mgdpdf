@@ -3,7 +3,7 @@
 //! dispatches pointer events to the tool for the page under the cursor.
 
 use eframe::egui;
-use egui::{Color32, Pos2, Rect, ScrollArea, Sense, Stroke, StrokeKind, Vec2};
+use egui::{Color32, Pos2, Rect, ScrollArea, Stroke, StrokeKind, Vec2};
 
 use crate::edit::EditSession;
 use crate::pdf::coords::PageTransform;
@@ -57,12 +57,14 @@ impl PageView {
                         let logical_h = size_pt.height * zoom;
                         let desired = Vec2::new(logical_w, logical_h);
 
-                        // Sense::click_and_drag lets us capture pointer events
-                        // on the page even while the scroll view is active.
-                        let (rect, response) = ui.allocate_exact_size(
-                            desired,
-                            Sense::click_and_drag(),
-                        );
+                        // Sense is supplied by the active tool — `hover` for
+                        // tools like Hand and Form Fill so the surrounding
+                        // ScrollArea keeps consuming drags (scrolling works);
+                        // `click_and_drag` for tools that need to detect raw
+                        // drags on the page background.
+                        let sense = tools.active().page_sense();
+                        let (rect, response) =
+                            ui.allocate_exact_size(desired, sense);
 
                         let transform = PageTransform::new(
                             Vec2::new(size_pt.width, size_pt.height),
