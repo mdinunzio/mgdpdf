@@ -4,8 +4,10 @@
 //! the app sees PDFs as `Document` (page metadata + handles) plus rendered
 //! `PageTexture`s from the [`render`] cache.
 
+pub mod coords;
 pub mod document;
 pub mod render;
 
+pub use coords::PageTransform;
 pub use document::Document;
 pub use render::TextureCache;

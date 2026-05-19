@@ -1,27 +1,43 @@
 //! Scrollable multi-page viewport. Lays pages vertically, requests textures
-//! from the cache, and paints them. Stays read-only in Phase 1 — edit overlays
-//! are added in later phases.
+//! from the cache, paints each page, runs the active tool's overlay, and
+//! dispatches pointer events to the tool for the page under the cursor.
 
 use eframe::egui;
 use egui::{Color32, Pos2, Rect, ScrollArea, Sense, Stroke, StrokeKind, Vec2};
 
+use crate::edit::EditSession;
+use crate::pdf::coords::PageTransform;
 use crate::pdf::document::Document;
 use crate::pdf::render::{TextureCache, ZoomBucket};
+use crate::tools::{ToolCtx, ToolEvent, ToolBox};
 
 /// Space between consecutive pages, in logical pixels.
 const PAGE_GAP: f32 = 12.0;
 
 pub struct PageView;
 
+pub struct PageViewState<'a> {
+    pub doc: &'a Document,
+    pub cache: &'a mut TextureCache,
+    pub zoom: f32,
+    pub tools: &'a mut ToolBox,
+    pub session: &'a mut EditSession,
+    pub undo: &'a mut crate::edit::UndoStack,
+}
+
 impl PageView {
     /// Renders the multi-page scroll view and returns the page index closest
-    /// to the centre of the viewport (useful for "go to page" status).
-    pub fn show(
-        ui: &mut egui::Ui,
-        doc: &Document,
-        cache: &mut TextureCache,
-        zoom: f32,
-    ) -> usize {
+    /// to the centre of the viewport.
+    pub fn show(ui: &mut egui::Ui, state: PageViewState<'_>) -> usize {
+        let PageViewState {
+            doc,
+            cache,
+            zoom,
+            tools,
+            session,
+            undo,
+        } = state;
+
         let pixels_per_point = ui.ctx().pixels_per_point();
         let bucket = ZoomBucket::nearest(zoom);
 
@@ -30,7 +46,6 @@ impl PageView {
         ScrollArea::both()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                let available_w = ui.available_width();
                 ui.vertical_centered(|ui| {
                     for page_index in 0..doc.page_count() {
                         let Some(size_pt) = doc.page_size_pt(page_index) else {
@@ -38,23 +53,32 @@ impl PageView {
                         };
                         let logical_w = size_pt.width * zoom;
                         let logical_h = size_pt.height * zoom;
-
-                        // Reserve space for the page-sized rectangle.
                         let desired = Vec2::new(logical_w, logical_h);
-                        let (rect, _resp) = ui.allocate_exact_size(desired, Sense::hover());
 
-                        // Track the page nearest to the vertical centre of the visible viewport.
-                        if let Some(visible) = visible_rect(ui) {
-                            if rect.center().y >= visible.top()
-                                && rect.center().y <= visible.bottom()
-                            {
-                                current_page = page_index;
-                            }
+                        // Sense::click_and_drag lets us capture pointer events
+                        // on the page even while the scroll view is active.
+                        let (rect, response) = ui.allocate_exact_size(
+                            desired,
+                            Sense::click_and_drag(),
+                        );
+
+                        let transform = PageTransform::new(
+                            Vec2::new(size_pt.width, size_pt.height),
+                            rect,
+                        );
+
+                        // Track viewport-centre page for the status bar.
+                        let visible = ui.clip_rect();
+                        if rect.center().y >= visible.top()
+                            && rect.center().y <= visible.bottom()
+                        {
+                            current_page = page_index;
                         }
 
-                        // Skip rendering off-screen pages — saves the texture upload and keeps
-                        // the cache warm for what's actually visible.
-                        if !is_in_viewport(ui, rect) {
+                        // Cheap visibility check: skip painting (and texture
+                        // upload) for pages outside the viewport + one screen
+                        // of margin in either direction.
+                        if !is_in_viewport(visible, rect) {
                             paint_placeholder(ui, rect);
                             ui.add_space(PAGE_GAP);
                             continue;
@@ -72,25 +96,42 @@ impl PageView {
                                 painter.image(
                                     page_tex.texture.id(),
                                     rect,
-                                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                                    Rect::from_min_max(
+                                        Pos2::ZERO,
+                                        Pos2::new(1.0, 1.0),
+                                    ),
                                     Color32::WHITE,
                                 );
-                                // Subtle page border so white pages don't blend into the bg.
                                 painter.rect_stroke(
                                     rect,
                                     0.0,
                                     Stroke::new(1.0, Color32::from_gray(180)),
                                     StrokeKind::Outside,
                                 );
+
+                                // Tool overlay (drawn on top of the bitmap).
+                                tools.active().draw_overlay(
+                                    page_index,
+                                    &painter,
+                                    &transform,
+                                    session,
+                                );
                             }
                             Err(_) => paint_placeholder(ui, rect),
                         }
 
+                        // Dispatch pointer events to the active tool.
+                        dispatch_pointer_events(
+                            page_index,
+                            &response,
+                            &transform,
+                            tools,
+                            session,
+                            undo,
+                        );
+
                         ui.add_space(PAGE_GAP);
                     }
-
-                    // Mute the unused-width warning by referencing it.
-                    let _ = available_w;
                 });
             });
 
@@ -98,13 +139,47 @@ impl PageView {
     }
 }
 
-fn visible_rect(ui: &egui::Ui) -> Option<Rect> {
-    Some(ui.clip_rect())
+fn dispatch_pointer_events(
+    page_index: usize,
+    response: &egui::Response,
+    transform: &PageTransform,
+    tools: &mut ToolBox,
+    session: &mut EditSession,
+    undo: &mut crate::edit::UndoStack,
+) {
+    let mut ctx = ToolCtx { session, undo };
+    if response.hovered() {
+        if let Some(screen) = response.hover_pos() {
+            let pdf = transform.screen_to_pdf(screen);
+            tools
+                .active_mut()
+                .on_event(page_index, ToolEvent::PointerMove { pdf }, &mut ctx);
+        }
+    } else {
+        tools
+            .active_mut()
+            .on_event(page_index, ToolEvent::PointerLeave, &mut ctx);
+    }
+    if response.drag_started() || response.clicked() {
+        if let Some(screen) = response.interact_pointer_pos() {
+            let pdf = transform.screen_to_pdf(screen);
+            tools
+                .active_mut()
+                .on_event(page_index, ToolEvent::PointerDown { pdf }, &mut ctx);
+        }
+    }
+    if response.drag_stopped() {
+        if let Some(screen) = response.interact_pointer_pos() {
+            let pdf = transform.screen_to_pdf(screen);
+            tools
+                .active_mut()
+                .on_event(page_index, ToolEvent::PointerUp { pdf }, &mut ctx);
+        }
+    }
 }
 
-fn is_in_viewport(ui: &egui::Ui, rect: Rect) -> bool {
-    let clip = ui.clip_rect();
-    // Add a one-page margin so we pre-render the next page just below the fold.
+fn is_in_viewport(clip: Rect, rect: Rect) -> bool {
+    // Add a margin so we render the next page just below the fold.
     let expanded = clip.expand(rect.height().min(1500.0));
     expanded.intersects(rect)
 }

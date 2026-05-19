@@ -1,4 +1,4 @@
-//! Top-level eframe App. Phase 1 scope: open a PDF, scroll, zoom.
+//! Top-level eframe App.
 
 use std::path::{Path, PathBuf};
 
@@ -7,8 +7,10 @@ use egui::{Key, Modifiers};
 use pdfium_render::prelude::Pdfium;
 use tracing::warn;
 
+use crate::edit::{EditSession, UndoStack};
 use crate::pdf::{Document, TextureCache};
-use crate::ui::PageView;
+use crate::tools::ToolBox;
+use crate::ui::page_view::{PageView, PageViewState};
 
 const MIN_ZOOM: f32 = 0.25;
 const MAX_ZOOM: f32 = 6.0;
@@ -23,8 +25,11 @@ pub struct App {
     /// 0-based index of the page nearest the viewport centre; updated each frame.
     current_page: usize,
     error: Option<String>,
-    /// Deferred flag so the rfd dialog runs outside any egui input-lock scope.
     pending_open_dialog: bool,
+
+    tools: ToolBox,
+    session: EditSession,
+    undo: UndoStack,
 }
 
 impl App {
@@ -37,6 +42,9 @@ impl App {
             current_page: 0,
             error: None,
             pending_open_dialog: false,
+            tools: ToolBox::default(),
+            session: EditSession::new(0),
+            undo: UndoStack::default(),
         };
         if let Some(path) = initial_file {
             app.open_path(&path);
@@ -48,6 +56,8 @@ impl App {
         self.cache.clear();
         match Document::open(self.pdfium, path) {
             Ok(doc) => {
+                self.session = EditSession::new(doc.page_count());
+                self.undo.clear();
                 self.doc = Some(doc);
                 self.current_page = 0;
                 self.zoom = DEFAULT_ZOOM;
@@ -82,12 +92,15 @@ impl App {
         }
 
         // Keyboard shortcuts.
-        let (open, zoom_in, zoom_out, zoom_reset, ctrl_scroll) = ctx.input_mut(|i| {
+        let (open, zoom_in, zoom_out, zoom_reset, ctrl_scroll, undo, redo) = ctx.input_mut(|i| {
             let open = i.consume_key(Modifiers::CTRL, Key::O);
             let zoom_in = i.consume_key(Modifiers::CTRL, Key::Plus)
                 || i.consume_key(Modifiers::CTRL, Key::Equals);
             let zoom_out = i.consume_key(Modifiers::CTRL, Key::Minus);
             let zoom_reset = i.consume_key(Modifiers::CTRL, Key::Num0);
+            let undo = i.consume_key(Modifiers::CTRL, Key::Z);
+            let redo = i.consume_key(Modifiers::CTRL, Key::Y)
+                || i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::Z);
 
             let ctrl_scroll = if i.modifiers.ctrl {
                 let dy = i.smooth_scroll_delta.y;
@@ -101,7 +114,7 @@ impl App {
                 None
             };
 
-            (open, zoom_in, zoom_out, zoom_reset, ctrl_scroll)
+            (open, zoom_in, zoom_out, zoom_reset, ctrl_scroll, undo, redo)
         });
 
         if open {
@@ -120,6 +133,12 @@ impl App {
             let factor = if dy > 0.0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
             self.set_zoom(self.zoom * factor);
         }
+        if undo {
+            self.undo.undo(&mut self.session);
+        }
+        if redo {
+            self.undo.redo(&mut self.session);
+        }
     }
 }
 
@@ -135,6 +154,37 @@ impl eframe::App for App {
                     self.pending_open_dialog = true;
                 }
                 ui.separator();
+
+                // Tool picker.
+                let active = self.tools.active_index();
+                let tool_buttons: Vec<(usize, &'static str)> = self
+                    .tools
+                    .tools()
+                    .map(|(i, t)| (i, t.label()))
+                    .collect();
+                for (i, label) in tool_buttons {
+                    if ui.selectable_label(i == active, label).clicked() {
+                        self.tools.set_active(i);
+                    }
+                }
+                ui.separator();
+
+                if ui
+                    .add_enabled(self.undo.can_undo(), egui::Button::new("Undo"))
+                    .on_hover_text("Ctrl+Z")
+                    .clicked()
+                {
+                    self.undo.undo(&mut self.session);
+                }
+                if ui
+                    .add_enabled(self.undo.can_redo(), egui::Button::new("Redo"))
+                    .on_hover_text("Ctrl+Y / Ctrl+Shift+Z")
+                    .clicked()
+                {
+                    self.undo.redo(&mut self.session);
+                }
+                ui.separator();
+
                 if ui.button("−").on_hover_text("Zoom out (Ctrl+-)").clicked() {
                     self.set_zoom(self.zoom / ZOOM_STEP);
                 }
@@ -146,6 +196,7 @@ impl eframe::App for App {
                     self.set_zoom(DEFAULT_ZOOM);
                 }
                 ui.separator();
+
                 if let Some(doc) = &self.doc {
                     ui.label(format!(
                         "Page {} / {}",
@@ -153,6 +204,10 @@ impl eframe::App for App {
                         doc.page_count()
                     ));
                     ui.separator();
+                    if self.session.dirty {
+                        ui.colored_label(egui::Color32::from_rgb(200, 130, 0), "● unsaved");
+                        ui.separator();
+                    }
                     if let Some(name) = doc.path().file_name().and_then(|n| n.to_str()) {
                         ui.label(name);
                     }
@@ -167,8 +222,17 @@ impl eframe::App for App {
 
             match &self.doc {
                 Some(doc) => {
-                    self.current_page =
-                        PageView::show(ui, doc, &mut self.cache, self.zoom);
+                    self.current_page = PageView::show(
+                        ui,
+                        PageViewState {
+                            doc,
+                            cache: &mut self.cache,
+                            zoom: self.zoom,
+                            tools: &mut self.tools,
+                            session: &mut self.session,
+                            undo: &mut self.undo,
+                        },
+                    );
                 }
                 None => {
                     ui.centered_and_justified(|ui| {
