@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir:*)",
+      "WebSearch",
+      "PowerShell(rustc:*)",
+      "PowerShell(cargo:*)",
+      "WebFetch(domain:crates.io)",
+      "PowerShell(rustup:*)",
+      "WebFetch(domain:api.github.com)",
+      "PowerShell(New-Item:*)",
+      "PowerShell(Get-ChildItem:*)",
+      "PowerShell(Copy-Item:*)",
+      "PowerShell(Test-Path:*)",
+      "Bash(grep:*)",
+      "Read(//c/Users/mdinu/**)"
+    ]
+  }
+}
