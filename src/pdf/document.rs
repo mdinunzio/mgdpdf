@@ -14,6 +14,40 @@ pub struct PageSizePt {
     pub height: f32,
 }
 
+/// PDF-space axis-aligned rect with origin at the **bottom-left** of the page.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct PdfRectPt {
+    pub left: f32,
+    pub bottom: f32,
+    pub right: f32,
+    pub top: f32,
+}
+
+/// Stable identity for a widget annotation within an open document. The
+/// annotation index is local to a page; combined with `page_index` it uniquely
+/// identifies a widget for the lifetime of this `Document`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct WidgetId {
+    pub page_index: usize,
+    pub annotation_index: u32,
+}
+
+/// Read-only snapshot of a single text-field widget. Authored once at document
+/// open by [`Document::collect_text_widgets`]; later updates flow back through
+/// [`Document::set_text_field_value`].
+#[derive(Clone, Debug)]
+pub struct TextFieldWidget {
+    pub id: WidgetId,
+    /// Optional `/T` field name from the PDF. Unnamed fields have `None`.
+    /// Kept for diagnostics and future field-by-name lookups.
+    #[allow(dead_code)]
+    pub name: Option<String>,
+    /// Bounding rect in PDF points.
+    pub rect_pt: PdfRectPt,
+    /// Current value as PDFium sees it (may be the default placeholder).
+    pub value: String,
+}
+
 pub struct Document {
     pdfium: &'static Pdfium,
     inner: PdfDocument<'static>,
@@ -54,6 +88,97 @@ impl Document {
 
     pub fn page_size_pt(&self, index: usize) -> Option<PageSizePt> {
         self.page_sizes.get(index).copied()
+    }
+
+    /// `true` if the document carries an interactive form (AcroForm or XFA).
+    /// Surfaced in the UI by Phase 3's polish pass (status-bar hint) — until
+    /// then it's read by external callers / tests only.
+    #[allow(dead_code)]
+    pub fn has_form(&self) -> bool {
+        self.inner.form().is_some()
+    }
+
+    /// Walks every page's annotations and returns the text widgets it finds.
+    /// Pure-read; safe to call any time after open.
+    pub fn collect_text_widgets(&self) -> Vec<TextFieldWidget> {
+        let mut out = Vec::new();
+        let pages = self.inner.pages();
+        for page_index in 0..pages.len() {
+            let Ok(page) = pages.get(page_index as i32) else {
+                continue;
+            };
+            for (annotation_index, annotation) in page.annotations().iter().enumerate() {
+                if let PdfPageAnnotation::Widget(ref w) = annotation {
+                    let Some(PdfFormField::Text(t)) = w.form_field() else {
+                        continue;
+                    };
+                    let Ok(bounds) = w.bounds() else {
+                        continue;
+                    };
+                    out.push(TextFieldWidget {
+                        id: WidgetId {
+                            page_index: page_index as usize,
+                            annotation_index: annotation_index as u32,
+                        },
+                        name: t.name(),
+                        rect_pt: PdfRectPt {
+                            left: bounds.left().value,
+                            bottom: bounds.bottom().value,
+                            right: bounds.right().value,
+                            top: bounds.top().value,
+                        },
+                        value: t.value().unwrap_or_default(),
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// Writes `value` into the text field identified by `id`. Persisted to disk
+    /// only on [`Document::save_as`]. Returns an error if the widget does not
+    /// resolve to a text field.
+    pub fn set_text_field_value(&mut self, id: WidgetId, value: &str) -> Result<()> {
+        let mut page = self
+            .inner
+            .pages_mut()
+            .get(id.page_index as i32)
+            .with_context(|| format!("page index out of range: {}", id.page_index))?;
+        let annotations = page.annotations_mut();
+        let mut annotation = annotations
+            .get(id.annotation_index as usize)
+            .with_context(|| {
+                format!(
+                    "annotation index out of range: page {} annotation {}",
+                    id.page_index, id.annotation_index
+                )
+            })?;
+        match &mut annotation {
+            PdfPageAnnotation::Widget(w) => {
+                let Some(field) = w.form_field_mut() else {
+                    anyhow::bail!("widget at {:?} has no form field", id);
+                };
+                match field {
+                    PdfFormField::Text(t) => {
+                        t.set_value(value)?;
+                        Ok(())
+                    }
+                    _ => anyhow::bail!("widget at {:?} is not a text field", id),
+                }
+            }
+            _ => anyhow::bail!("annotation at {:?} is not a widget", id),
+        }
+    }
+
+    /// Writes the in-memory document to a new file. Does not modify the source
+    /// file; the caller is responsible for tracking whether `path` matches
+    /// `self.path()` (i.e. "Save" vs "Save As").
+    pub fn save_as(&self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref();
+        self.inner
+            .save_to_file(path)
+            .with_context(|| format!("failed to save PDF: {}", path.display()))?;
+        Ok(())
     }
 
     /// Renders a single page into an RGBA buffer (premultiplied, top-left origin)

@@ -7,9 +7,9 @@ use egui::{Color32, Pos2, Rect, ScrollArea, Sense, Stroke, StrokeKind, Vec2};
 
 use crate::edit::EditSession;
 use crate::pdf::coords::PageTransform;
-use crate::pdf::document::Document;
+use crate::pdf::document::{Document, TextFieldWidget};
 use crate::pdf::render::{TextureCache, ZoomBucket};
-use crate::tools::{ToolCtx, ToolEvent, ToolBox};
+use crate::tools::{ToolBox, ToolCtx, ToolEvent};
 
 /// Space between consecutive pages, in logical pixels.
 const PAGE_GAP: f32 = 12.0;
@@ -23,6 +23,7 @@ pub struct PageViewState<'a> {
     pub tools: &'a mut ToolBox,
     pub session: &'a mut EditSession,
     pub undo: &'a mut crate::edit::UndoStack,
+    pub widgets: &'a [TextFieldWidget],
 }
 
 impl PageView {
@@ -36,6 +37,7 @@ impl PageView {
             tools,
             session,
             undo,
+            widgets,
         } = state;
 
         let pixels_per_point = ui.ctx().pixels_per_point();
@@ -120,6 +122,24 @@ impl PageView {
                             Err(_) => paint_placeholder(ui, rect),
                         }
 
+                        // Interactive overlay (text inputs, drag handles, etc).
+                        ui.scope_builder(
+                            egui::UiBuilder::new().max_rect(rect),
+                            |ui| {
+                                let mut ctx = ToolCtx {
+                                    session,
+                                    undo,
+                                    widgets,
+                                };
+                                tools.active_mut().draw_interactive(
+                                    page_index,
+                                    ui,
+                                    &transform,
+                                    &mut ctx,
+                                );
+                            },
+                        );
+
                         // Dispatch pointer events to the active tool.
                         dispatch_pointer_events(
                             page_index,
@@ -128,6 +148,7 @@ impl PageView {
                             tools,
                             session,
                             undo,
+                            widgets,
                         );
 
                         ui.add_space(PAGE_GAP);
@@ -146,8 +167,13 @@ fn dispatch_pointer_events(
     tools: &mut ToolBox,
     session: &mut EditSession,
     undo: &mut crate::edit::UndoStack,
+    widgets: &[TextFieldWidget],
 ) {
-    let mut ctx = ToolCtx { session, undo };
+    let mut ctx = ToolCtx {
+        session,
+        undo,
+        widgets,
+    };
     if response.hovered() {
         if let Some(screen) = response.hover_pos() {
             let pdf = transform.screen_to_pdf(screen);
