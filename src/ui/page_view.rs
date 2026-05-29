@@ -5,9 +5,11 @@
 use eframe::egui;
 use egui::{Color32, Pos2, Rect, ScrollArea, Stroke, StrokeKind, Vec2};
 
+use std::collections::HashMap;
+
 use crate::edit::EditSession;
 use crate::pdf::coords::PageTransform;
-use crate::pdf::document::{Document, TextFieldWidget};
+use crate::pdf::document::{Document, GlyphRect, TextFieldWidget};
 use crate::pdf::render::{TextureCache, ZoomBucket};
 use crate::tools::{ToolBox, ToolCtx, ToolEvent, ToolSettings};
 
@@ -24,6 +26,7 @@ pub struct PageViewState<'a> {
     pub session: &'a mut EditSession,
     pub undo: &'a mut crate::edit::UndoStack,
     pub widgets: &'a [TextFieldWidget],
+    pub glyphs: &'a HashMap<usize, Vec<GlyphRect>>,
     pub settings: ToolSettings,
 }
 
@@ -39,6 +42,7 @@ impl PageView {
             session,
             undo,
             widgets,
+            glyphs,
             settings,
         } = state;
 
@@ -130,6 +134,17 @@ impl PageView {
                                 Stroke::new(1.0, Color32::from_gray(180)),
                                 StrokeKind::Outside,
                             );
+
+                            // Committed highlights are content: render them on
+                            // every page regardless of the active tool, over the
+                            // page bitmap but under free text.
+                            crate::tools::highlight::draw_highlight_content(
+                                page_index,
+                                &painter,
+                                &transform,
+                                session,
+                            );
+
                             tools.active().draw_overlay(page_index, &painter, &transform, session);
 
                             // Free-text boxes are content: render them on every
@@ -155,6 +170,7 @@ impl PageView {
                             session,
                             undo,
                             widgets,
+                            glyphs,
                             settings,
                         };
                         tools
@@ -163,7 +179,8 @@ impl PageView {
                     });
 
                     dispatch_pointer_events(
-                        page_index, &response, &transform, tools, session, undo, widgets, settings,
+                        page_index, &response, &transform, tools, session, undo, widgets, glyphs,
+                        settings,
                     );
                 }
             });
@@ -181,12 +198,14 @@ fn dispatch_pointer_events(
     session: &mut EditSession,
     undo: &mut crate::edit::UndoStack,
     widgets: &[TextFieldWidget],
+    glyphs: &HashMap<usize, Vec<GlyphRect>>,
     settings: ToolSettings,
 ) {
     let mut ctx = ToolCtx {
         session,
         undo,
         widgets,
+        glyphs,
         settings,
     };
     if response.hovered() {

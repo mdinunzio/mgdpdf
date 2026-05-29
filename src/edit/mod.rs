@@ -48,6 +48,17 @@ pub struct FreeTextBox {
     pub color: [u8; 4],
 }
 
+/// A highlight authored by the user: one or more rectangles (PDF points,
+/// bottom-left origin) sharing a colour. Text selection produces one rect per
+/// line; the scanned-page fallback produces a single dragged rect.
+#[derive(Clone, Debug)]
+pub struct Highlight {
+    pub id: EditId,
+    pub page_index: usize,
+    pub rects_pt: Vec<[f32; 4]>, // each [left, bottom, right, top]
+    pub color: [u8; 4],
+}
+
 /// A pending edit to be committed to the PDF on save.
 #[derive(Clone, Debug)]
 pub enum Edit {
@@ -61,6 +72,8 @@ pub enum Edit {
     },
     /// A new free-text box stamped onto the page.
     FreeText(FreeTextBox),
+    /// A highlight (set of translucent rects) over the page.
+    Highlight(Highlight),
 }
 
 impl Edit {
@@ -68,6 +81,7 @@ impl Edit {
         match self {
             Edit::FormFill { id, .. } => *id,
             Edit::FreeText(b) => b.id,
+            Edit::Highlight(h) => h.id,
         }
     }
 }
@@ -211,6 +225,52 @@ impl EditSession {
     pub fn iter_free_texts(&self) -> impl Iterator<Item = &FreeTextBox> {
         self.by_page.iter().flatten().filter_map(|e| match e {
             Edit::FreeText(b) => Some(b),
+            _ => None,
+        })
+    }
+
+    // --- Highlight helpers -------------------------------------------------
+
+    /// Adds a highlight and returns its id.
+    pub fn add_highlight(&mut self, h: Highlight) -> EditId {
+        let id = h.id;
+        if let Some(page) = self.by_page.get_mut(h.page_index) {
+            page.push(Edit::Highlight(h));
+        }
+        id
+    }
+
+    /// Removes the highlight with `id` from `page_index`, returning it.
+    pub fn remove_highlight(&mut self, page_index: usize, id: EditId) -> Option<Highlight> {
+        let page = self.by_page.get_mut(page_index)?;
+        let pos = page
+            .iter()
+            .position(|e| matches!(e, Edit::Highlight(h) if h.id == id))?;
+        match page.remove(pos) {
+            Edit::Highlight(h) => Some(h),
+            other => {
+                self.by_page[page_index].insert(pos, other);
+                None
+            }
+        }
+    }
+
+    /// Iterates the highlights on a page in insertion order.
+    pub fn highlights_on(&self, page_index: usize) -> impl Iterator<Item = &Highlight> {
+        self.by_page
+            .get(page_index)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| match e {
+                Edit::Highlight(h) => Some(h),
+                _ => None,
+            })
+    }
+
+    /// Iterates every highlight across all pages.
+    pub fn iter_highlights(&self) -> impl Iterator<Item = &Highlight> {
+        self.by_page.iter().flatten().filter_map(|e| match e {
+            Edit::Highlight(h) => Some(h),
             _ => None,
         })
     }
