@@ -31,6 +31,23 @@ impl EditId {
     }
 }
 
+/// A free-text box authored by the user. Position is the top-left corner in
+/// PDF points (the box grows downward in screen space); `font_size` is in
+/// points; `color` is RGBA (alpha currently ignored on commit — PDFium uses
+/// opaque text fill).
+#[derive(Clone, Debug)]
+pub struct FreeTextBox {
+    pub id: EditId,
+    pub page_index: usize,
+    /// Top-left corner in PDF points.
+    pub origin_pt: [f32; 2],
+    /// Box size in PDF points (width, height).
+    pub size_pt: [f32; 2],
+    pub text: String,
+    pub font_size: f32,
+    pub color: [u8; 4],
+}
+
 /// A pending edit to be committed to the PDF on save.
 #[derive(Clone, Debug)]
 pub enum Edit {
@@ -42,12 +59,15 @@ pub enum Edit {
         widget: WidgetId,
         value: String,
     },
+    /// A new free-text box stamped onto the page.
+    FreeText(FreeTextBox),
 }
 
 impl Edit {
     pub fn id(&self) -> EditId {
-        match *self {
-            Edit::FormFill { id, .. } => id,
+        match self {
+            Edit::FormFill { id, .. } => *id,
+            Edit::FreeText(b) => b.id,
         }
     }
 }
@@ -82,9 +102,10 @@ impl EditSession {
     pub fn form_fill_value(&self, widget: WidgetId) -> Option<&str> {
         // Latest wins.
         for edit in self.by_page.get(widget.page_index)?.iter().rev() {
-            let Edit::FormFill { widget: w, value, .. } = edit;
-            if *w == widget {
-                return Some(value.as_str());
+            if let Edit::FormFill { widget: w, value, .. } = edit {
+                if *w == widget {
+                    return Some(value.as_str());
+                }
             }
         }
         None
@@ -96,10 +117,11 @@ impl EditSession {
     pub fn upsert_form_fill(&mut self, widget: WidgetId, new_value: String) -> Option<String> {
         let page = self.by_page.get_mut(widget.page_index)?;
         for edit in page.iter_mut().rev() {
-            let Edit::FormFill { widget: w, value, .. } = edit;
-            if *w == widget {
-                let prev = std::mem::replace(value, new_value);
-                return Some(prev);
+            if let Edit::FormFill { widget: w, value, .. } = edit {
+                if *w == widget {
+                    let prev = std::mem::replace(value, new_value);
+                    return Some(prev);
+                }
             }
         }
         page.push(Edit::FormFill {
@@ -114,11 +136,16 @@ impl EditSession {
     pub fn remove_form_fill(&mut self, widget: WidgetId) -> Option<String> {
         let page = self.by_page.get_mut(widget.page_index)?;
         let pos = page.iter().position(|edit| {
-            let Edit::FormFill { widget: w, .. } = edit;
-            *w == widget
+            matches!(edit, Edit::FormFill { widget: w, .. } if *w == widget)
         })?;
-        let Edit::FormFill { value, .. } = page.remove(pos);
-        Some(value)
+        match page.remove(pos) {
+            Edit::FormFill { value, .. } => Some(value),
+            other => {
+                // Shouldn't happen — we matched FormFill above. Restore and bail.
+                self.by_page[widget.page_index].insert(pos, other);
+                None
+            }
+        }
     }
 
     /// Total edit count across all pages.
@@ -128,11 +155,63 @@ impl EditSession {
 
     /// Iterates every `FormFill` edit in the session. Stable order per call.
     pub fn iter_form_fills(&self) -> impl Iterator<Item = (WidgetId, &str)> {
-        self.by_page.iter().flat_map(|page| {
-            page.iter().map(|edit| {
-                let Edit::FormFill { widget, value, .. } = edit;
-                (*widget, value.as_str())
+        self.by_page.iter().flatten().filter_map(|edit| match edit {
+            Edit::FormFill { widget, value, .. } => Some((*widget, value.as_str())),
+            _ => None,
+        })
+    }
+
+    // --- Free-text helpers -------------------------------------------------
+
+    /// Adds a free-text box and returns its id.
+    pub fn add_free_text(&mut self, b: FreeTextBox) -> EditId {
+        let id = b.id;
+        if let Some(page) = self.by_page.get_mut(b.page_index) {
+            page.push(Edit::FreeText(b));
+        }
+        id
+    }
+
+    /// Removes the free-text box with `id` from `page_index`, returning it.
+    pub fn remove_free_text(&mut self, page_index: usize, id: EditId) -> Option<FreeTextBox> {
+        let page = self.by_page.get_mut(page_index)?;
+        let pos = page
+            .iter()
+            .position(|e| matches!(e, Edit::FreeText(b) if b.id == id))?;
+        match page.remove(pos) {
+            Edit::FreeText(b) => Some(b),
+            other => {
+                self.by_page[page_index].insert(pos, other);
+                None
+            }
+        }
+    }
+
+    /// Mutable access to a free-text box by id.
+    pub fn free_text_mut(&mut self, page_index: usize, id: EditId) -> Option<&mut FreeTextBox> {
+        self.by_page.get_mut(page_index)?.iter_mut().find_map(|e| match e {
+            Edit::FreeText(b) if b.id == id => Some(b),
+            _ => None,
+        })
+    }
+
+    /// Iterates the free-text boxes on a page in insertion order.
+    pub fn free_texts_on(&self, page_index: usize) -> impl Iterator<Item = &FreeTextBox> {
+        self.by_page
+            .get(page_index)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| match e {
+                Edit::FreeText(b) => Some(b),
+                _ => None,
             })
+    }
+
+    /// Iterates every free-text box across all pages.
+    pub fn iter_free_texts(&self) -> impl Iterator<Item = &FreeTextBox> {
+        self.by_page.iter().flatten().filter_map(|e| match e {
+            Edit::FreeText(b) => Some(b),
+            _ => None,
         })
     }
 }

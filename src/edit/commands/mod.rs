@@ -6,5 +6,7 @@
 //! O(1) and prevents the PDFium handle from being mutated while typing.
 
 pub mod fill_form_field;
+pub mod free_text;
 
 pub use fill_form_field::FillFormFieldCommand;
+pub use free_text::{AddFreeTextCommand, EditFreeTextCommand, MoveFreeTextCommand};

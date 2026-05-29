@@ -8,9 +8,9 @@ use pdfium_render::prelude::Pdfium;
 use tracing::warn;
 
 use crate::edit::{EditSession, UndoStack};
-use crate::pdf::document::TextFieldWidget;
+use crate::pdf::document::{EditBundle, FreeTextSpec, TextFieldWidget};
 use crate::pdf::{Document, TextureCache};
-use crate::tools::ToolBox;
+use crate::tools::{ToolBox, ToolSettings};
 use crate::ui::page_view::{PageView, PageViewState};
 
 const MIN_ZOOM: f32 = 0.25;
@@ -35,6 +35,8 @@ pub struct App {
     undo: UndoStack,
     /// Cached text-field widgets for the open document. Rebuilt on each open.
     widgets: Vec<TextFieldWidget>,
+    /// Styling applied to newly-created edits (free-text font size + colour).
+    tool_settings: ToolSettings,
 }
 
 impl App {
@@ -53,6 +55,7 @@ impl App {
             session: EditSession::new(0),
             undo: UndoStack::default(),
             widgets: Vec::new(),
+            tool_settings: ToolSettings::default(),
         };
         if let Some(path) = initial_file {
             app.open_path(&path);
@@ -90,28 +93,33 @@ impl App {
         }
     }
 
-    /// Pushes every pending edit into PDFium and writes the document to `path`.
-    /// Does not modify the source PDF unless `path` equals the source path
-    /// (Save vs Save As — the caller is responsible for that distinction).
+    /// Builds an edit bundle from the session and writes it to `path` against a
+    /// fresh copy of the source PDF (so saving is idempotent and never mutates
+    /// the working document or the original file).
     fn save_to(&mut self, path: &Path) {
-        let Some(doc) = self.doc.as_mut() else {
+        let Some(doc) = self.doc.as_ref() else {
             return;
         };
-        // Commit pending edits to PDFium.
-        let form_fills: Vec<(crate::pdf::document::WidgetId, String)> = self
+
+        let mut bundle = EditBundle::default();
+        bundle.form_fills = self
             .session
             .iter_form_fills()
             .map(|(id, v)| (id, v.to_string()))
             .collect();
-        for (widget, value) in form_fills {
-            if let Err(e) = doc.set_text_field_value(widget, &value) {
-                let msg = format!("Failed to set form field {widget:?}: {e:#}");
-                warn!("{msg}");
-                self.error = Some(msg);
-                return;
-            }
-        }
-        if let Err(e) = doc.save_as(path) {
+        bundle.free_texts = self
+            .session
+            .iter_free_texts()
+            .map(|b| FreeTextSpec {
+                page_index: b.page_index,
+                origin_pt: b.origin_pt,
+                size_pt: b.size_pt,
+                text: b.text.clone(),
+                color: b.color,
+            })
+            .collect();
+
+        if let Err(e) = doc.save_with_edits(path, &bundle) {
             let msg = format!("Failed to save {}: {e:#}", path.display());
             warn!("{msg}");
             self.error = Some(msg);
@@ -243,6 +251,26 @@ impl eframe::App for App {
                 }
                 ui.separator();
 
+                // Text-styling controls — only relevant for the free-text tool.
+                if self.tools.active().id() == "free_text" {
+                    ui.label("Size");
+                    ui.add(
+                        egui::DragValue::new(&mut self.tool_settings.font_size)
+                            .range(6.0..=72.0)
+                            .speed(0.5)
+                            .suffix(" pt"),
+                    );
+                    let mut rgb = [
+                        self.tool_settings.text_color[0],
+                        self.tool_settings.text_color[1],
+                        self.tool_settings.text_color[2],
+                    ];
+                    if ui.color_edit_button_srgb(&mut rgb).changed() {
+                        self.tool_settings.text_color = [rgb[0], rgb[1], rgb[2], 255];
+                    }
+                    ui.separator();
+                }
+
                 if ui
                     .add_enabled(self.undo.can_undo(), egui::Button::new("Undo"))
                     .on_hover_text("Ctrl+Z")
@@ -308,6 +336,7 @@ impl eframe::App for App {
                             session: &mut self.session,
                             undo: &mut self.undo,
                             widgets: &self.widgets,
+                            settings: self.tool_settings,
                         },
                     );
                 }
