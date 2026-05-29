@@ -13,4 +13,4 @@ pub mod signature;
 pub use fill_form_field::FillFormFieldCommand;
 pub use free_text::{AddFreeTextCommand, EditFreeTextCommand, MoveFreeTextCommand};
 pub use highlight::AddHighlightCommand;
-pub use signature::{AddSignatureCommand, MoveSignatureCommand};
+pub use signature::{AddSignatureCommand, MoveSignatureCommand, ResizeSignatureCommand};

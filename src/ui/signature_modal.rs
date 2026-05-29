@@ -210,10 +210,14 @@ impl SignatureModal {
         ui.label("Type your name (rendered in a script font):");
         ui.text_edit_singleline(&mut self.typed_name);
         if !self.typed_name.trim().is_empty() {
+            // Preview in the same Caveat script font used for the output, so the
+            // preview matches what gets placed.
             ui.label(
                 egui::RichText::new(&self.typed_name)
-                    .size(36.0)
-                    .italics()
+                    .font(egui::FontId::new(
+                        44.0,
+                        egui::FontFamily::Name("caveat".into()),
+                    ))
                     .color(Color32::from_rgb(INK[0], INK[1], INK[2])),
             );
         }
