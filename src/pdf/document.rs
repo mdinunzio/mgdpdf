@@ -242,6 +242,9 @@ impl Document {
         for ft in &edits.free_texts {
             add_free_text_on(&mut scratch, ft)?;
         }
+        for sig in &edits.signatures {
+            add_signature_on(&mut scratch, sig)?;
+        }
 
         scratch
             .save_to_file(out_path)
@@ -318,12 +321,25 @@ pub struct HighlightSpec {
     pub color: [u8; 4],
 }
 
+/// A signature to stamp onto a page: a transparent RGBA image placed at a
+/// rectangle (PDF points, top-left origin).
+#[derive(Clone)]
+pub struct SignatureSpec {
+    pub page_index: usize,
+    /// Top-left corner in PDF points.
+    pub origin_pt: [f32; 2],
+    /// Rendered size in PDF points (width, height).
+    pub size_pt: [f32; 2],
+    pub image: std::sync::Arc<image::RgbaImage>,
+}
+
 /// All edits to apply to a fresh copy of the source PDF on save.
 #[derive(Default)]
 pub struct EditBundle {
     pub form_fills: Vec<(WidgetId, String)>,
     pub free_texts: Vec<FreeTextSpec>,
     pub highlights: Vec<HighlightSpec>,
+    pub signatures: Vec<SignatureSpec>,
 }
 
 fn set_text_field_value_on(
@@ -402,6 +418,33 @@ fn add_free_text_on(doc: &mut PdfDocument<'_>, spec: &FreeTextSpec) -> Result<()
         spec.color[3],
     ))?;
 
+    page.regenerate_content()?;
+    Ok(())
+}
+
+fn add_signature_on(doc: &mut PdfDocument<'_>, spec: &SignatureSpec) -> Result<()> {
+    // Stamp the signature as a page content image object (renders in every
+    // viewer, with transparency preserved via the image's alpha channel).
+    let dynamic = image::DynamicImage::ImageRgba8((*spec.image).clone());
+
+    let left = spec.origin_pt[0];
+    let top = spec.origin_pt[1];
+    let bottom = top - spec.size_pt[1];
+
+    let mut page = doc
+        .pages_mut()
+        .get(spec.page_index as i32)
+        .with_context(|| format!("page index out of range: {}", spec.page_index))?;
+    page.set_content_regeneration_strategy(
+        PdfPageContentRegenerationStrategy::AutomaticOnEveryChange,
+    );
+    page.objects_mut().create_image_object(
+        PdfPoints::new(left),
+        PdfPoints::new(bottom),
+        &dynamic,
+        Some(PdfPoints::new(spec.size_pt[0])),
+        Some(PdfPoints::new(spec.size_pt[1])),
+    )?;
     page.regenerate_content()?;
     Ok(())
 }

@@ -2,17 +2,23 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use eframe::egui;
-use egui::{Key, Modifiers};
+use egui::{Key, Modifiers, TextureHandle};
+use image::RgbaImage;
 use pdfium_render::prelude::Pdfium;
 use tracing::warn;
 
-use crate::edit::{EditSession, UndoStack};
-use crate::pdf::document::{EditBundle, FreeTextSpec, GlyphRect, HighlightSpec, TextFieldWidget};
+use crate::edit::{EditId, EditSession, UndoStack};
+use crate::pdf::document::{
+    EditBundle, FreeTextSpec, GlyphRect, HighlightSpec, SignatureSpec, TextFieldWidget,
+};
 use crate::pdf::{Document, TextureCache};
+use crate::signature::SignatureLibrary;
 use crate::tools::{ToolBox, ToolSettings};
 use crate::ui::page_view::{PageView, PageViewState};
+use crate::ui::signature_modal::SignatureModal;
 
 const MIN_ZOOM: f32 = 0.25;
 const MAX_ZOOM: f32 = 6.0;
@@ -40,6 +46,12 @@ pub struct App {
     glyphs: HashMap<usize, Vec<GlyphRect>>,
     /// Styling applied to newly-created edits (free-text font size + colour).
     tool_settings: ToolSettings,
+
+    /// Signature capture modal + saved-signature library + pending placement.
+    sig_modal: SignatureModal,
+    sig_library: SignatureLibrary,
+    pending_signature: Option<Arc<RgbaImage>>,
+    sig_textures: HashMap<EditId, TextureHandle>,
 }
 
 impl App {
@@ -60,6 +72,10 @@ impl App {
             widgets: Vec::new(),
             glyphs: HashMap::new(),
             tool_settings: ToolSettings::default(),
+            sig_modal: SignatureModal::default(),
+            sig_library: SignatureLibrary::open(),
+            pending_signature: None,
+            sig_textures: HashMap::new(),
         };
         if let Some(path) = initial_file {
             app.open_path(&path);
@@ -73,6 +89,8 @@ impl App {
             Ok(doc) => {
                 self.widgets = doc.collect_text_widgets();
                 self.glyphs.clear();
+                self.sig_textures.clear();
+                self.pending_signature = None;
                 self.session = EditSession::new(doc.page_count());
                 self.undo.clear();
                 self.doc = Some(doc);
@@ -140,6 +158,16 @@ impl App {
                     })
                     .collect(),
                 color: h.color,
+            })
+            .collect();
+        bundle.signatures = self
+            .session
+            .iter_signatures()
+            .map(|s| SignatureSpec {
+                page_index: s.page_index,
+                origin_pt: s.origin_pt,
+                size_pt: s.size_pt,
+                image: s.image.clone(),
             })
             .collect();
 
@@ -275,6 +303,31 @@ impl eframe::App for App {
                 }
                 ui.separator();
 
+                // Signature capture: opens the modal and selects the signature
+                // tool so the captured image can be placed with a click.
+                if ui
+                    .add_enabled(self.doc.is_some(), egui::Button::new("Sign…"))
+                    .on_hover_text("Capture a signature, then click the page to place it")
+                    .clicked()
+                {
+                    self.sig_modal.open(&self.sig_library);
+                    let sig_index = self
+                        .tools
+                        .tools()
+                        .find(|(_, t)| t.id() == "signature")
+                        .map(|(i, _)| i);
+                    if let Some(i) = sig_index {
+                        self.tools.set_active(i);
+                    }
+                }
+                if self.pending_signature.is_some() {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(60, 140, 60),
+                        "click page to place ✍",
+                    );
+                }
+                ui.separator();
+
                 // Text-styling controls — only relevant for the free-text tool.
                 if self.tools.active().id() == "free_text" {
                     ui.label("Size");
@@ -387,6 +440,8 @@ impl eframe::App for App {
                             undo: &mut self.undo,
                             widgets: &self.widgets,
                             glyphs: &self.glyphs,
+                            pending_signature: &mut self.pending_signature,
+                            sig_textures: &mut self.sig_textures,
                             settings: self.tool_settings,
                         },
                     );
@@ -398,6 +453,12 @@ impl eframe::App for App {
                 }
             }
         });
+
+        // Signature capture modal. When it returns an image, arm the tool to
+        // place it on the next page click.
+        if let Some(image) = self.sig_modal.show(ui.ctx(), &self.sig_library) {
+            self.pending_signature = Some(image);
+        }
 
         if std::mem::take(&mut self.pending_open_dialog) {
             self.open_via_dialog();

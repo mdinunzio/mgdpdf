@@ -62,6 +62,7 @@ fn free_text_renders_in_saved_file_and_save_is_idempotent() {
             color: [200, 0, 0, 255],
         }],
         highlights: Vec::new(),
+        signatures: Vec::new(),
     };
 
     let out = std::env::temp_dir().join("mgdpdf-test-freetext.pdf");

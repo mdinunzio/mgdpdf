@@ -3,6 +3,9 @@ use std::path::PathBuf;
 fn main() {
     println!("cargo:rerun-if-changed=vendor/pdfium/pdfium.dll");
     println!("cargo:rerun-if-changed=build.rs");
+    // `include_bytes!` doesn't make cargo track the embedded file, so a font
+    // swap would otherwise not trigger a rebuild. Track it explicitly.
+    println!("cargo:rerun-if-changed=assets/fonts/Caveat-Regular.ttf");
 
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("vendor")

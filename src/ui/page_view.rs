@@ -6,8 +6,12 @@ use eframe::egui;
 use egui::{Color32, Pos2, Rect, ScrollArea, Stroke, StrokeKind, Vec2};
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use crate::edit::EditSession;
+use egui::TextureHandle;
+use image::RgbaImage;
+
+use crate::edit::{EditId, EditSession};
 use crate::pdf::coords::PageTransform;
 use crate::pdf::document::{Document, GlyphRect, TextFieldWidget};
 use crate::pdf::render::{TextureCache, ZoomBucket};
@@ -27,6 +31,9 @@ pub struct PageViewState<'a> {
     pub undo: &'a mut crate::edit::UndoStack,
     pub widgets: &'a [TextFieldWidget],
     pub glyphs: &'a HashMap<usize, Vec<GlyphRect>>,
+    pub pending_signature: &'a mut Option<Arc<RgbaImage>>,
+    /// Lazily-uploaded textures for placed signatures, keyed by edit id.
+    pub sig_textures: &'a mut HashMap<EditId, TextureHandle>,
     pub settings: ToolSettings,
 }
 
@@ -43,6 +50,8 @@ impl PageView {
             undo,
             widgets,
             glyphs,
+            pending_signature,
+            sig_textures,
             settings,
         } = state;
 
@@ -160,6 +169,16 @@ impl PageView {
                                     session,
                                 );
                             }
+
+                            // Placed signatures (textures), content on every page.
+                            draw_signature_content(
+                                page_index,
+                                &painter,
+                                ui.ctx(),
+                                &transform,
+                                session,
+                                sig_textures,
+                            );
                         }
                         Err(_) => paint_placeholder(ui, rect),
                     }
@@ -171,6 +190,7 @@ impl PageView {
                             undo,
                             widgets,
                             glyphs,
+                            pending_signature: &mut *pending_signature,
                             settings,
                         };
                         tools
@@ -179,7 +199,15 @@ impl PageView {
                     });
 
                     dispatch_pointer_events(
-                        page_index, &response, &transform, tools, session, undo, widgets, glyphs,
+                        page_index,
+                        &response,
+                        &transform,
+                        tools,
+                        session,
+                        undo,
+                        widgets,
+                        glyphs,
+                        &mut *pending_signature,
                         settings,
                     );
                 }
@@ -199,6 +227,7 @@ fn dispatch_pointer_events(
     undo: &mut crate::edit::UndoStack,
     widgets: &[TextFieldWidget],
     glyphs: &HashMap<usize, Vec<GlyphRect>>,
+    pending_signature: &mut Option<Arc<RgbaImage>>,
     settings: ToolSettings,
 ) {
     let mut ctx = ToolCtx {
@@ -206,6 +235,7 @@ fn dispatch_pointer_events(
         undo,
         widgets,
         glyphs,
+        pending_signature,
         settings,
     };
     if response.hovered() {
@@ -247,4 +277,43 @@ fn paint_placeholder(ui: &egui::Ui, rect: Rect) {
         Stroke::new(1.0, Color32::from_gray(200)),
         StrokeKind::Outside,
     );
+}
+
+/// Draws placed signatures for a page, uploading each signature's bitmap to a
+/// cached GPU texture on first use. Content on every page regardless of tool.
+fn draw_signature_content(
+    page_index: usize,
+    painter: &egui::Painter,
+    ctx: &egui::Context,
+    transform: &PageTransform,
+    session: &EditSession,
+    sig_textures: &mut HashMap<EditId, TextureHandle>,
+) {
+    for s in session.signatures_on(page_index) {
+        let texture = sig_textures.entry(s.id).or_insert_with(|| {
+            let img = &*s.image;
+            let color = egui::ColorImage::from_rgba_unmultiplied(
+                [img.width() as usize, img.height() as usize],
+                img.as_raw(),
+            );
+            ctx.load_texture(
+                format!("mgdpdf::sig::{:?}", s.id),
+                color,
+                egui::TextureOptions::LINEAR,
+            )
+        });
+
+        let screen = transform.pdf_rect_to_screen(
+            s.origin_pt[0],
+            s.origin_pt[1] - s.size_pt[1],
+            s.origin_pt[0] + s.size_pt[0],
+            s.origin_pt[1],
+        );
+        painter.image(
+            texture.id(),
+            screen,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            Color32::WHITE,
+        );
+    }
 }

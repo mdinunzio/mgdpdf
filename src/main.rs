@@ -40,11 +40,34 @@ fn main() -> Result<()> {
     eframe::run_native(
         "mgdpdf",
         native_options,
-        Box::new(move |_cc| Ok(Box::new(app::App::new(pdfium, cli.file)))),
+        Box::new(move |cc| {
+            install_script_font(&cc.egui_ctx);
+            Ok(Box::new(app::App::new(pdfium, cli.file)))
+        }),
     )
     .map_err(|e| anyhow::anyhow!("eframe: {e}"))?;
 
     Ok(())
+}
+
+/// Registers the bundled Great Vibes script font under the family name
+/// "signature" so the modal's typed preview matches the rendered output.
+fn install_script_font(ctx: &egui::Context) {
+    use egui::{FontData, FontFamily};
+
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "signature".to_owned(),
+        std::sync::Arc::new(FontData::from_static(include_bytes!(
+            "../assets/fonts/GreatVibes-Regular.ttf"
+        ))),
+    );
+    fonts
+        .families
+        .entry(FontFamily::Name("signature".into()))
+        .or_default()
+        .insert(0, "signature".to_owned());
+    ctx.set_fonts(fonts);
 }
 
 /// Binds PDFium from candidate directories, in priority order:
