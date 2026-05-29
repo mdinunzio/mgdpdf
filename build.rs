@@ -5,7 +5,10 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     // `include_bytes!` doesn't make cargo track the embedded file, so a font
     // swap would otherwise not trigger a rebuild. Track it explicitly.
-    println!("cargo:rerun-if-changed=assets/fonts/Caveat-Regular.ttf");
+    println!("cargo:rerun-if-changed=assets/fonts/GreatVibes-Regular.ttf");
+    println!("cargo:rerun-if-changed=assets/icon.ico");
+
+    embed_windows_resources();
 
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("vendor")
@@ -28,6 +31,31 @@ fn main() {
         });
     }
 }
+
+/// On Windows, embeds the app icon and version metadata into the executable so
+/// it shows in Explorer, the taskbar, and the Start-menu shortcut. No-op on
+/// other platforms.
+#[cfg(windows)]
+fn embed_windows_resources() {
+    let icon = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("assets")
+        .join("icon.ico");
+    if !icon.exists() {
+        // Icon is optional during early dev; skip rather than fail the build.
+        println!("cargo:warning=assets/icon.ico not found; building without an app icon");
+        return;
+    }
+    let mut res = winresource::WindowsResource::new();
+    res.set_icon(icon.to_str().expect("icon path is valid UTF-8"));
+    res.set("ProductName", "mgdpdf");
+    res.set("FileDescription", "mgdpdf — PDF viewer and editor");
+    if let Err(e) = res.compile() {
+        println!("cargo:warning=failed to embed Windows resources: {e}");
+    }
+}
+
+#[cfg(not(windows))]
+fn embed_windows_resources() {}
 
 fn locate_target_dir() -> PathBuf {
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR not set"));

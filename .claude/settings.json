@@ -56,7 +56,12 @@
       "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\(\"assets\\\\fonts\\\\Caveat-Regular.ttf\"\\); $txt = [System.Text.Encoding]::ASCII.GetString\\($bytes\\); Write-Output \\(\"on-disk font: {0} bytes, variable={1}\" -f $bytes.Length, $txt.Contains\\(\"fvar\"\\)\\); cargo build --release 2>&1 | Select-Object -Last 3)",
       "PowerShell(cargo run --quiet --example font_probe 2>&1 | Select-String -Pattern \"==|advance|wrote\" | ForEach-Object { $_.ToString\\(\\) } | Select-Object -First 60)",
       "PowerShell(Invoke-WebRequest -Uri 'https://cdn.jsdelivr.net/fontsource/fonts/great-vibes@latest/latin-400-normal.ttf' -OutFile 'assets\\\\fonts\\\\GreatVibes-Regular.ttf' -UseBasicParsing; $b=[System.IO.File]::ReadAllBytes\\('assets\\\\fonts\\\\GreatVibes-Regular.ttf'\\); $t=[System.Text.Encoding]::ASCII.GetString\\($b\\); Write-Output \\(\"GreatVibes-Regular.ttf: {0} bytes, variable={1}, glyf={2}\" -f $b.Length, $t.Contains\\('fvar'\\), $t.Contains\\('glyf'\\)\\))",
-      "PowerShell(try { Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/google/fonts/main/ofl/greatvibes/OFL.txt' -OutFile 'assets\\\\fonts\\\\GreatVibes-OFL.txt' -UseBasicParsing -ErrorAction Stop; Write-Output \\(\"OFL: {0} bytes\" -f \\(Get-Item assets\\\\fonts\\\\GreatVibes-OFL.txt\\).Length\\) } catch { Write-Output \"fail: $\\($_.Exception.Message\\)\" })"
+      "PowerShell(try { Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/google/fonts/main/ofl/greatvibes/OFL.txt' -OutFile 'assets\\\\fonts\\\\GreatVibes-OFL.txt' -UseBasicParsing -ErrorAction Stop; Write-Output \\(\"OFL: {0} bytes\" -f \\(Get-Item assets\\\\fonts\\\\GreatVibes-OFL.txt\\).Length\\) } catch { Write-Output \"fail: $\\($_.Exception.Message\\)\" })",
+      "PowerShell(winget install --id JRSoftware.InnoSetup --accept-source-agreements --accept-package-agreements --silent 2>&1)",
+      "PowerShell($ico = [System.IO.File]::ReadAllBytes\\(\"assets\\\\icon.ico\"\\); $png = $ico[22..\\($ico.Length-1\\)]; [System.IO.File]::WriteAllBytes\\(\"icon_preview.png\", $png\\); Write-Output \"extracted $\\($png.Length\\) bytes\")",
+      "PowerShell(cargo build --release 2>&1 | Out-File -Encoding utf8 b.txt; Get-Content b.txt | Select-String -Pattern \"error\\\\[|error:|warning:|winresource|Finished\" | ForEach-Object { $_.ToString\\(\\) } | Select-Object -First 20; Remove-Item b.txt)",
+      "PowerShell(& \"$env:LOCALAPPDATA\\\\Programs\\\\Inno Setup 6\\\\ISCC.exe\" installer\\\\mgdpdf.iss 2>&1 | Select-Object -Last 20)",
+      "PowerShell(Get-Item installer\\\\dist\\\\mgdpdf-setup-0.1.0.exe | Select-Object Name, @{N='SizeMB';E={[math]::Round\\($_.Length/1MB,2\\)}}, LastWriteTime | Format-List)"
     ]
   }
 }

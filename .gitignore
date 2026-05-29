@@ -11,3 +11,6 @@ Thumbs.db
 
 # Autosave sidecars from running the app
 *.mgdpdf.json
+
+# Built installer output
+/installer/dist/
