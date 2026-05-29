@@ -1,14 +1,18 @@
 //! Free-text tool: click empty page space to place a text box, type into it,
 //! drag the grip handle to move it. Boxes commit to PDFium free-text
 //! annotations on save.
-
-use std::collections::HashMap;
+//!
+//! The boxes themselves (text + border) are rendered by `page_view` for every
+//! page regardless of the active tool — see [`draw_free_text_content`] — so
+//! they don't vanish when the user switches to Hand or Form Fill. This tool
+//! adds only the *interactive* affordances: the editable field, the move grip,
+//! and click-to-place.
 
 use eframe::egui;
 use egui::{Color32, FontId, Frame, Pos2, Rect, Sense, Stroke, StrokeKind, TextEdit, Ui, Vec2};
 
-use crate::edit::commands::{AddFreeTextCommand, EditFreeTextCommand, MoveFreeTextCommand};
-use crate::edit::{EditId, FreeTextBox};
+use crate::edit::commands::{AddFreeTextCommand, MoveFreeTextCommand};
+use crate::edit::{EditId, EditSession, FreeTextBox};
 use crate::pdf::PageTransform;
 
 use super::{Tool, ToolCtx, ToolEvent};
@@ -20,11 +24,9 @@ const GRIP_PX: f32 = 12.0;
 
 #[derive(Default)]
 pub struct FreeTextTool {
-    /// Live text buffers per box id, so `TextEdit` has a stable `&mut String`.
-    buffers: HashMap<EditId, String>,
     /// Box currently being dragged + its in-progress origin (PDF pts).
     dragging: Option<(EditId, [f32; 2])>,
-    /// Set when a click placed a new box this frame; we focus its editor.
+    /// Box whose editor we should focus on the next frame (just placed).
     focus_next: Option<EditId>,
 }
 
@@ -43,21 +45,28 @@ impl Tool for FreeTextTool {
     }
 
     fn on_event(&mut self, page_index: usize, event: ToolEvent, ctx: &mut ToolCtx<'_>) {
-        // Place a new box on a plain click over empty page space. If the click
-        // landed on an existing box, that box's TextEdit consumes the click
-        // first (it's painted on top), so this only fires on empty space.
+        // Place a new box only when the click lands on empty page space — not
+        // inside an existing box (where the user means to edit, not create).
         if let ToolEvent::PointerDown { pdf } = event {
+            let click = [pdf.x, pdf.y];
+            let on_existing = ctx
+                .session
+                .free_texts_on(page_index)
+                .any(|b| point_in_box(click, b));
+            if on_existing {
+                return;
+            }
+
             let id = EditId::next();
             let b = FreeTextBox {
                 id,
                 page_index,
-                origin_pt: [pdf.x, pdf.y],
+                origin_pt: click,
                 size_pt: DEFAULT_BOX_PT,
                 text: String::new(),
                 font_size: ctx.settings.font_size,
                 color: ctx.settings.text_color,
             };
-            self.buffers.insert(id, String::new());
             self.focus_next = Some(id);
             ctx.run(AddFreeTextCommand::new(b));
         }
@@ -70,35 +79,26 @@ impl Tool for FreeTextTool {
         transform: &PageTransform,
         ctx: &mut ToolCtx<'_>,
     ) {
-        // Snapshot the boxes on this page so we don't hold a borrow on `session`
-        // while we also mutate it through commands.
-        let boxes: Vec<FreeTextBox> = ctx.session.free_texts_on(page_index).cloned().collect();
+        let ids: Vec<EditId> = ctx
+            .session
+            .free_texts_on(page_index)
+            .map(|b| b.id)
+            .collect();
 
-        for b in boxes {
-            // While dragging, preview at the live origin.
-            let origin = if let Some((id, live)) = self.dragging {
-                if id == b.id {
-                    live
-                } else {
-                    b.origin_pt
-                }
-            } else {
-                b.origin_pt
+        for id in ids {
+            // Read the current geometry/colour for layout.
+            let Some(b) = ctx.session.free_text_mut(page_index, id).map(|b| b.clone()) else {
+                continue;
             };
 
-            let screen_rect = transform.pdf_rect_to_screen(
-                origin[0],
-                origin[1] - b.size_pt[1],
-                origin[0] + b.size_pt[0],
-                origin[1],
-            );
+            let origin = match self.dragging {
+                Some((d, live)) if d == id => live,
+                _ => b.origin_pt,
+            };
+            let screen_rect = box_screen_rect(transform, origin, b.size_pt);
 
-            // Box background + border.
-            ui.painter_at(screen_rect).rect_filled(
-                screen_rect,
-                2.0,
-                Color32::from_rgba_unmultiplied(255, 255, 255, 12),
-            );
+            // Edit border (only shown by this tool — the content border is drawn
+            // by `draw_free_text_content`).
             ui.painter_at(screen_rect).rect_stroke(
                 screen_rect,
                 2.0,
@@ -106,35 +106,38 @@ impl Tool for FreeTextTool {
                 StrokeKind::Inside,
             );
 
-            // Text editor.
-            let font_size = b.font_size * transform.zoom();
+            // Editable field. We write directly into the session box's `text`
+            // so the session is the single source of truth — no separate buffer
+            // that can desync from what eventually gets saved.
+            let font_size = (b.font_size * transform.zoom()).clamp(6.0, 48.0);
             let text_rect = Rect::from_min_max(
                 Pos2::new(screen_rect.min.x + 4.0, screen_rect.min.y + 2.0),
                 screen_rect.max,
             );
-            let buf = self.buffers.entry(b.id).or_insert_with(|| b.text.clone());
-            let edit_id = egui::Id::new(("mgdpdf::free_text", b.id));
-            let response = ui.put(
-                text_rect,
-                TextEdit::multiline(buf)
-                    .id(edit_id)
-                    .frame(Frame::NONE)
-                    .desired_rows(1)
-                    .font(FontId::proportional(font_size.clamp(6.0, 48.0)))
-                    .text_color(Color32::from_rgb(
-                        b.color[0],
-                        b.color[1],
-                        b.color[2],
-                    )),
-            );
+            let edit_id = egui::Id::new(("mgdpdf::free_text", id));
 
-            if self.focus_next == Some(b.id) {
+            // Borrow the session box mutably just for the TextEdit call.
+            let response = {
+                let Some(box_mut) = ctx.session.free_text_mut(page_index, id) else {
+                    continue;
+                };
+                let resp = ui.put(
+                    text_rect,
+                    TextEdit::multiline(&mut box_mut.text)
+                        .id(edit_id)
+                        .frame(Frame::NONE)
+                        .desired_rows(1)
+                        .font(FontId::proportional(font_size))
+                        .text_color(Color32::from_rgb(b.color[0], b.color[1], b.color[2])),
+                );
+                resp
+            };
+            if response.changed() {
+                ctx.session.dirty = true;
+            }
+            if self.focus_next == Some(id) {
                 response.request_focus();
                 self.focus_next = None;
-            }
-
-            if response.changed() {
-                ctx.run(EditFreeTextCommand::new(page_index, b.id, buf.clone()));
             }
 
             // Move grip at the top-left corner.
@@ -142,11 +145,7 @@ impl Tool for FreeTextTool {
                 Pos2::new(screen_rect.min.x - GRIP_PX, screen_rect.min.y - GRIP_PX),
                 Vec2::splat(GRIP_PX),
             );
-            let grip_resp = ui.interact(
-                grip,
-                edit_id.with("grip"),
-                Sense::click_and_drag(),
-            );
+            let grip_resp = ui.interact(grip, edit_id.with("grip"), Sense::click_and_drag());
             ui.painter().rect_filled(
                 grip,
                 2.0,
@@ -158,25 +157,70 @@ impl Tool for FreeTextTool {
             );
 
             if grip_resp.drag_started() {
-                self.dragging = Some((b.id, b.origin_pt));
+                self.dragging = Some((id, origin));
             }
-            if let Some((id, _)) = self.dragging {
-                if id == b.id && grip_resp.dragged() {
+            if let Some((d, cur)) = self.dragging {
+                if d == id && grip_resp.dragged() {
                     let delta = grip_resp.drag_delta();
-                    // Screen delta → PDF delta (y inverted, divide by zoom).
                     let zoom = transform.zoom().max(f32::EPSILON);
-                    let new_origin = [
-                        origin[0] + delta.x / zoom,
-                        origin[1] - delta.y / zoom,
-                    ];
-                    self.dragging = Some((id, new_origin));
+                    self.dragging = Some((id, [cur[0] + delta.x / zoom, cur[1] - delta.y / zoom]));
                 }
-                if id == b.id && grip_resp.drag_stopped() {
+                if d == id && grip_resp.drag_stopped() {
                     if let Some((_, final_origin)) = self.dragging.take() {
-                        ctx.run(MoveFreeTextCommand::new(page_index, b.id, final_origin));
+                        ctx.run(MoveFreeTextCommand::new(page_index, id, final_origin));
                     }
                 }
             }
         }
     }
+}
+
+/// Renders the committed free-text boxes for a page as *content* — text plus a
+/// faint border — independent of the active tool. Called by `page_view` for
+/// every visible page so the boxes stay visible under Hand / Form Fill too.
+pub fn draw_free_text_content(
+    page_index: usize,
+    painter: &egui::Painter,
+    transform: &PageTransform,
+    session: &EditSession,
+) {
+    for b in session.free_texts_on(page_index) {
+        let screen_rect = box_screen_rect(transform, b.origin_pt, b.size_pt);
+
+        // Faint guide border so empty/!focused boxes are discoverable.
+        painter.rect_stroke(
+            screen_rect,
+            2.0,
+            Stroke::new(1.0, Color32::from_rgba_unmultiplied(90, 140, 220, 90)),
+            StrokeKind::Inside,
+        );
+
+        if !b.text.is_empty() {
+            let font_size = (b.font_size * transform.zoom()).clamp(6.0, 48.0);
+            painter.text(
+                Pos2::new(screen_rect.min.x + 4.0, screen_rect.min.y + 2.0),
+                egui::Align2::LEFT_TOP,
+                &b.text,
+                FontId::proportional(font_size),
+                Color32::from_rgb(b.color[0], b.color[1], b.color[2]),
+            );
+        }
+    }
+}
+
+fn box_screen_rect(transform: &PageTransform, origin_pt: [f32; 2], size_pt: [f32; 2]) -> Rect {
+    transform.pdf_rect_to_screen(
+        origin_pt[0],
+        origin_pt[1] - size_pt[1],
+        origin_pt[0] + size_pt[0],
+        origin_pt[1],
+    )
+}
+
+fn point_in_box(p: [f32; 2], b: &FreeTextBox) -> bool {
+    let left = b.origin_pt[0];
+    let right = left + b.size_pt[0];
+    let top = b.origin_pt[1];
+    let bottom = top - b.size_pt[1];
+    p[0] >= left && p[0] <= right && p[1] >= bottom && p[1] <= top
 }

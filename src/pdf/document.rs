@@ -152,6 +152,22 @@ impl Document {
             .unwrap_or(0)
     }
 
+    /// Contents of every free-text annotation on a page — used by tests to
+    /// verify that typed text actually round-trips to the saved file.
+    #[allow(dead_code)]
+    pub fn collect_free_text_contents(&self, page_index: usize) -> Vec<String> {
+        let Ok(page) = self.inner.pages().get(page_index as i32) else {
+            return Vec::new();
+        };
+        page.annotations()
+            .iter()
+            .filter_map(|a| match a {
+                PdfPageAnnotation::FreeText(ref ft) => Some(ft.contents().unwrap_or_default()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Writes the in-memory document to a new file. Does not modify the source
     /// file; the caller is responsible for tracking whether `path` matches
     /// `self.path()` (i.e. "Save" vs "Save As").
@@ -295,6 +311,15 @@ fn add_free_text_on(doc: &mut PdfDocument<'_>, spec: &FreeTextSpec) -> Result<()
         .get(spec.page_index as i32)
         .with_context(|| format!("page index out of range: {}", spec.page_index))?;
 
+    // Pages opened from disk start in `Manual` content-regeneration mode, so a
+    // newly-created annotation is stored but PDFium never bakes its appearance
+    // stream — the text saves invisibly. Switching to AutomaticOnEveryChange
+    // makes pdfium-render regenerate the page content after each annotation
+    // mutation, so the free text actually renders in the saved file.
+    page.set_content_regeneration_strategy(
+        PdfPageContentRegenerationStrategy::AutomaticOnEveryChange,
+    );
+
     let left = spec.origin_pt[0];
     let top = spec.origin_pt[1];
     let right = left + spec.size_pt[0];
@@ -315,5 +340,9 @@ fn add_free_text_on(doc: &mut PdfDocument<'_>, spec: &FreeTextSpec) -> Result<()
         spec.color[3],
     ))?;
     annotation.set_contents(&spec.text)?;
+
+    // Force a final regeneration in case the strategy was applied after the
+    // create call's internal check.
+    page.regenerate_content()?;
     Ok(())
 }

@@ -131,6 +131,20 @@ impl PageView {
                                 StrokeKind::Outside,
                             );
                             tools.active().draw_overlay(page_index, &painter, &transform, session);
+
+                            // Free-text boxes are content: render them on every
+                            // page regardless of the active tool so they don't
+                            // vanish when switching tools. Skip when the
+                            // free-text tool is active — it draws live editable
+                            // versions itself (avoids double-drawing the text).
+                            if tools.active().id() != "free_text" {
+                                crate::tools::free_text::draw_free_text_content(
+                                    page_index,
+                                    &painter,
+                                    &transform,
+                                    session,
+                                );
+                            }
                         }
                         Err(_) => paint_placeholder(ui, rect),
                     }

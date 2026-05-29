@@ -63,5 +63,37 @@ fn free_text_round_trip_and_idempotent_save() {
         "expected exactly one new annotation after (idempotent) save, base={base_annotations} new={new_annotations}"
     );
 
+    // The typed text must actually round-trip to the saved file — this is the
+    // bug a user hit where text rendered on screen but wasn't saved.
+    let contents = reopened.collect_free_text_contents(0);
+    assert!(
+        contents.iter().any(|c| c == "Reviewed by Bob"),
+        "saved free-text contents missing; got {contents:?}"
+    );
+
+    // ...and the annotation must actually RENDER (have a baked appearance
+    // stream), not just carry contents. Render the page and confirm there are
+    // non-white pixels near the box that weren't there in the original. This is
+    // the gap between "contents stored" and "user sees text on save".
+    let painted = render_has_dark_pixels(&reopened, 0);
+    let original = Document::open(pdfium, &fixture).unwrap();
+    let original_painted = render_has_dark_pixels(&original, 0);
+    assert!(
+        painted > original_painted,
+        "free-text annotation did not render: dark pixels saved={painted} original={original_painted}"
+    );
+
     let _ = std::fs::remove_file(&out);
+}
+
+/// Counts roughly-dark pixels in a page render — a proxy for "something was
+/// drawn". Used to verify the free-text annotation has a visible appearance.
+fn render_has_dark_pixels(doc: &Document, page_index: usize) -> usize {
+    let img = doc
+        .render_page_rgba(page_index, 612, 792)
+        .expect("render page");
+    img.pixels
+        .chunks_exact(4)
+        .filter(|p| p[0] < 128 && p[1] < 128 && p[2] < 128 && p[3] > 0)
+        .count()
 }
