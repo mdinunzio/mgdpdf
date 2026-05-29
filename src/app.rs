@@ -115,6 +115,7 @@ impl App {
                 origin_pt: b.origin_pt,
                 size_pt: b.size_pt,
                 text: b.text.clone(),
+                font_size: b.font_size,
                 color: b.color,
             })
             .collect();

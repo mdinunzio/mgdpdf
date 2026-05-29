@@ -152,22 +152,6 @@ impl Document {
             .unwrap_or(0)
     }
 
-    /// Contents of every free-text annotation on a page — used by tests to
-    /// verify that typed text actually round-trips to the saved file.
-    #[allow(dead_code)]
-    pub fn collect_free_text_contents(&self, page_index: usize) -> Vec<String> {
-        let Ok(page) = self.inner.pages().get(page_index as i32) else {
-            return Vec::new();
-        };
-        page.annotations()
-            .iter()
-            .filter_map(|a| match a {
-                PdfPageAnnotation::FreeText(ref ft) => Some(ft.contents().unwrap_or_default()),
-                _ => None,
-            })
-            .collect()
-    }
-
     /// Writes the in-memory document to a new file. Does not modify the source
     /// file; the caller is responsible for tracking whether `path` matches
     /// `self.path()` (i.e. "Save" vs "Save As").
@@ -260,6 +244,7 @@ pub struct FreeTextSpec {
     /// Box size in PDF points (width, height).
     pub size_pt: [f32; 2],
     pub text: String,
+    pub font_size: f32,
     pub color: [u8; 4],
 }
 
@@ -306,43 +291,46 @@ fn set_text_field_value_on(
 }
 
 fn add_free_text_on(doc: &mut PdfDocument<'_>, spec: &FreeTextSpec) -> Result<()> {
+    // We draw the text as a real page *content* text object rather than a
+    // free-text annotation. PDFium's C API can't generate an appearance stream
+    // for free-text annotations, so annotation-based text renders in PDFium-
+    // based viewers (including ours) but is invisible in Adobe and others.
+    // A page text object is part of the page's drawing instructions, so it
+    // renders identically everywhere.
+    let font = doc.fonts_mut().helvetica();
+
     let mut page = doc
         .pages_mut()
         .get(spec.page_index as i32)
         .with_context(|| format!("page index out of range: {}", spec.page_index))?;
 
-    // Pages opened from disk start in `Manual` content-regeneration mode, so a
-    // newly-created annotation is stored but PDFium never bakes its appearance
-    // stream — the text saves invisibly. Switching to AutomaticOnEveryChange
-    // makes pdfium-render regenerate the page content after each annotation
-    // mutation, so the free text actually renders in the saved file.
+    // Regenerate page content on change so the new object is baked into the
+    // saved content stream.
     page.set_content_regeneration_strategy(
         PdfPageContentRegenerationStrategy::AutomaticOnEveryChange,
     );
 
-    let left = spec.origin_pt[0];
-    let top = spec.origin_pt[1];
-    let right = left + spec.size_pt[0];
-    let bottom = top - spec.size_pt[1];
+    // `origin_pt` is the box's top-left in PDF points; PDF text is positioned
+    // by its baseline, which sits ~`font_size` below the top.
+    let baseline_x = spec.origin_pt[0];
+    let baseline_y = spec.origin_pt[1] - spec.font_size;
 
-    let annotations = page.annotations_mut();
-    let mut annotation = annotations.create_free_text_annotation(&spec.text)?;
-    annotation.set_bounds(PdfRect::new(
-        PdfPoints::new(bottom),
-        PdfPoints::new(left),
-        PdfPoints::new(top),
-        PdfPoints::new(right),
-    ))?;
-    annotation.set_fill_color(PdfColor::new(
+    let object = page.objects_mut().create_text_object(
+        PdfPoints::new(baseline_x),
+        PdfPoints::new(baseline_y),
+        &spec.text,
+        font,
+        PdfPoints::new(spec.font_size),
+    )?;
+    // `create_text_object` returns the object already attached to the page.
+    let mut object = object;
+    object.set_fill_color(PdfColor::new(
         spec.color[0],
         spec.color[1],
         spec.color[2],
         spec.color[3],
     ))?;
-    annotation.set_contents(&spec.text)?;
 
-    // Force a final regeneration in case the strategy was applied after the
-    // create call's internal check.
     page.regenerate_content()?;
     Ok(())
 }
