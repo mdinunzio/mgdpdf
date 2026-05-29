@@ -61,7 +61,9 @@
       "PowerShell($ico = [System.IO.File]::ReadAllBytes\\(\"assets\\\\icon.ico\"\\); $png = $ico[22..\\($ico.Length-1\\)]; [System.IO.File]::WriteAllBytes\\(\"icon_preview.png\", $png\\); Write-Output \"extracted $\\($png.Length\\) bytes\")",
       "PowerShell(cargo build --release 2>&1 | Out-File -Encoding utf8 b.txt; Get-Content b.txt | Select-String -Pattern \"error\\\\[|error:|warning:|winresource|Finished\" | ForEach-Object { $_.ToString\\(\\) } | Select-Object -First 20; Remove-Item b.txt)",
       "PowerShell(& \"$env:LOCALAPPDATA\\\\Programs\\\\Inno Setup 6\\\\ISCC.exe\" installer\\\\mgdpdf.iss 2>&1 | Select-Object -Last 20)",
-      "PowerShell(Get-Item installer\\\\dist\\\\mgdpdf-setup-0.1.0.exe | Select-Object Name, @{N='SizeMB';E={[math]::Round\\($_.Length/1MB,2\\)}}, LastWriteTime | Format-List)"
+      "PowerShell(Get-Item installer\\\\dist\\\\mgdpdf-setup-0.1.0.exe | Select-Object Name, @{N='SizeMB';E={[math]::Round\\($_.Length/1MB,2\\)}}, LastWriteTime | Format-List)",
+      "PowerShell(cargo build 2>&1 | Out-File -Encoding utf8 b.txt; Get-Content b.txt | Select-String -Pattern \"error\\\\[|error:|warning:|Finished\" | ForEach-Object { $_.ToString\\(\\) } | Select-Object -First 20; Remove-Item b.txt)",
+      "PowerShell(cargo build 2>&1 | Out-File -Encoding utf8 b.txt; Get-Content b.txt | Select-String -Pattern \"error\\\\[|error:|warning:|Finished\" | ForEach-Object { $_.ToString\\(\\) } | Select-Object -First 25; Remove-Item b.txt)"
     ]
   }
 }

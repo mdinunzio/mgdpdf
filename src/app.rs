@@ -274,14 +274,21 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::Panel::top("toolbar").show_inside(ui, |ui| {
+        use crate::ui::theme;
+
+        egui::Panel::top("toolbar")
+            .frame(egui::Frame::default()
+                .fill(theme::PANEL_BG)
+                .inner_margin(egui::Margin::symmetric(10, 6))
+                .stroke(egui::Stroke::new(1.0, theme::BORDER)))
+            .show_inside(ui, |ui| {
             ui.horizontal(|ui| {
-                if ui.button("Open…").on_hover_text("Ctrl+O").clicked() {
+                if ui.button("📂  Open…").on_hover_text("Ctrl+O").clicked() {
                     self.pending_open_dialog = true;
                 }
                 let can_save = self.doc.is_some();
                 if ui
-                    .add_enabled(can_save, egui::Button::new("Save As…"))
+                    .add_enabled(can_save, egui::Button::new("💾  Save As…"))
                     .on_hover_text("Ctrl+S (saves to a new file)")
                     .clicked()
                 {
@@ -289,15 +296,18 @@ impl eframe::App for App {
                 }
                 ui.separator();
 
-                // Tool picker.
+                // Tool picker with small icons.
                 let active = self.tools.active_index();
-                let tool_buttons: Vec<(usize, &'static str)> = self
+                let tool_buttons: Vec<(usize, &'static str, &'static str)> = self
                     .tools
                     .tools()
-                    .map(|(i, t)| (i, t.label()))
+                    .map(|(i, t)| (i, tool_icon(t.id()), t.label()))
                     .collect();
-                for (i, label) in tool_buttons {
-                    if ui.selectable_label(i == active, label).clicked() {
+                for (i, icon, label) in tool_buttons {
+                    if ui
+                        .selectable_label(i == active, format!("{icon}  {label}"))
+                        .clicked()
+                    {
                         self.tools.set_active(i);
                     }
                 }
@@ -306,7 +316,7 @@ impl eframe::App for App {
                 // Signature capture: opens the modal and selects the signature
                 // tool so the captured image can be placed with a click.
                 if ui
-                    .add_enabled(self.doc.is_some(), egui::Button::new("Sign…"))
+                    .add_enabled(self.doc.is_some(), egui::Button::new("✍  Sign…"))
                     .on_hover_text("Capture a signature, then click the page to place it")
                     .clicked()
                 {
@@ -383,29 +393,44 @@ impl eframe::App for App {
                 if ui.button("−").on_hover_text("Zoom out (Ctrl+-)").clicked() {
                     self.set_zoom(self.zoom / ZOOM_STEP);
                 }
-                ui.label(format!("{:>3.0}%", self.zoom * 100.0));
                 if ui.button("+").on_hover_text("Zoom in (Ctrl+=)").clicked() {
                     self.set_zoom(self.zoom * ZOOM_STEP);
                 }
                 if ui.button("100%").on_hover_text("Ctrl+0").clicked() {
                     self.set_zoom(DEFAULT_ZOOM);
                 }
-                ui.separator();
+            });
+        });
 
+        // Bottom status bar: page indicator, zoom, dirty state, filename.
+        egui::Panel::bottom("status_bar")
+            .frame(egui::Frame::default()
+                .fill(theme::PANEL_BG)
+                .inner_margin(egui::Margin::symmetric(12, 4))
+                .stroke(egui::Stroke::new(1.0, theme::BORDER)))
+            .show_inside(ui, |ui| {
+            ui.horizontal(|ui| {
                 if let Some(doc) = &self.doc {
-                    ui.label(format!(
-                        "Page {} / {}",
-                        self.current_page + 1,
-                        doc.page_count()
-                    ));
+                    ui.colored_label(
+                        theme::TEXT_MUTED,
+                        format!("Page {} / {}", self.current_page + 1, doc.page_count()),
+                    );
                     ui.separator();
+                    ui.colored_label(theme::TEXT_MUTED, format!("{:>3.0}%", self.zoom * 100.0));
                     if self.session.dirty {
-                        ui.colored_label(egui::Color32::from_rgb(200, 130, 0), "● unsaved");
                         ui.separator();
+                        ui.colored_label(
+                            egui::Color32::from_rgb(0xB8, 0x76, 0x00),
+                            "● unsaved",
+                        );
                     }
-                    if let Some(name) = doc.path().file_name().and_then(|n| n.to_str()) {
-                        ui.label(name);
-                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if let Some(name) = doc.path().file_name().and_then(|n| n.to_str()) {
+                            ui.colored_label(theme::TEXT_MUTED, name);
+                        }
+                    });
+                } else {
+                    ui.colored_label(theme::TEXT_MUTED, "No document open");
                 }
             });
         });
@@ -420,11 +445,27 @@ impl eframe::App for App {
             }
         }
 
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::default()
+                .fill(theme::VIEWPORT_BG)
+                .inner_margin(egui::Margin::ZERO))
+            .show_inside(ui, |ui| {
             if let Some(msg) = &self.error {
-                ui.colored_label(egui::Color32::RED, msg);
+                egui::Frame::default()
+                    .fill(egui::Color32::from_rgb(0xFD, 0xEC, 0xEC))
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0xE3, 0xB0, 0xB0)))
+                    .inner_margin(egui::Margin::symmetric(10, 6))
+                    .show(ui, |ui| {
+                        ui.colored_label(egui::Color32::from_rgb(0x9B, 0x1C, 0x1C), msg);
+                    });
             } else if let Some(msg) = &self.status {
-                ui.colored_label(egui::Color32::from_rgb(60, 140, 60), msg);
+                egui::Frame::default()
+                    .fill(egui::Color32::from_rgb(0xE7, 0xF6, 0xEA))
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0xB7, 0xDE, 0xC0)))
+                    .inner_margin(egui::Margin::symmetric(10, 6))
+                    .show(ui, |ui| {
+                        ui.colored_label(egui::Color32::from_rgb(0x1E, 0x6B, 0x35), msg);
+                    });
             }
 
             match &self.doc {
@@ -446,11 +487,7 @@ impl eframe::App for App {
                         },
                     );
                 }
-                None => {
-                    ui.centered_and_justified(|ui| {
-                        ui.label("Open a PDF (Ctrl+O) or drag one onto the window.");
-                    });
-                }
+                None => render_empty_state(ui, &mut self.pending_open_dialog),
             }
         });
 
@@ -466,5 +503,45 @@ impl eframe::App for App {
         if std::mem::take(&mut self.pending_save_as_dialog) {
             self.save_as_via_dialog();
         }
+    }
+}
+
+/// Large, centered empty-state shown when no document is open.
+fn render_empty_state(ui: &mut egui::Ui, pending_open: &mut bool) {
+    use crate::ui::theme;
+    ui.vertical_centered(|ui| {
+        ui.add_space(ui.available_height() * 0.28);
+        ui.label(egui::RichText::new("📄").size(72.0).color(theme::TEXT_MUTED));
+        ui.add_space(8.0);
+        ui.label(
+            egui::RichText::new("No document open")
+                .size(22.0)
+                .color(egui::Color32::from_rgb(0x2A, 0x33, 0x44)),
+        );
+        ui.add_space(6.0);
+        ui.colored_label(theme::TEXT_MUTED, "Drag a PDF onto the window — or:");
+        ui.add_space(12.0);
+        if ui
+            .add(egui::Button::new(
+                egui::RichText::new("📂  Open PDF…").size(15.0),
+            ))
+            .clicked()
+        {
+            *pending_open = true;
+        }
+        ui.add_space(6.0);
+        ui.colored_label(theme::TEXT_MUTED, "Keyboard: Ctrl+O");
+    });
+}
+
+/// Small emoji icon for each tool, matching the tool's id.
+fn tool_icon(id: &str) -> &'static str {
+    match id {
+        "hand" => "✋",
+        "form_fill" => "📝",
+        "free_text" => "T",
+        "highlight" => "🖍",
+        "signature" => "✍",
+        _ => "•",
     }
 }

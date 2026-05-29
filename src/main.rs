@@ -42,6 +42,7 @@ fn main() -> Result<()> {
         native_options,
         Box::new(move |cc| {
             install_script_font(&cc.egui_ctx);
+            mgdpdf::ui::theme::install(&cc.egui_ctx);
             Ok(Box::new(app::App::new(pdfium, cli.file)))
         }),
     )

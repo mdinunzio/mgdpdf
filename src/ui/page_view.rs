@@ -130,6 +130,18 @@ impl PageView {
 
                     match cache.get_or_render(ui.ctx(), doc, page_index, bucket, pixels_per_point) {
                         Ok(page_tex) => {
+                            // Soft drop shadow under the page so it reads as a
+                            // physical sheet floating on the gutter.
+                            let shadow_painter = ui.painter();
+                            for (offset, alpha) in [(2.0, 28), (5.0, 18), (9.0, 10)] {
+                                let shadow_rect = rect.translate(egui::vec2(0.0, offset));
+                                shadow_painter.rect_filled(
+                                    shadow_rect,
+                                    0.0,
+                                    Color32::from_rgba_premultiplied(0, 0, 0, alpha),
+                                );
+                            }
+
                             let painter = ui.painter_at(rect);
                             painter.image(
                                 page_tex.texture.id(),
@@ -140,7 +152,7 @@ impl PageView {
                             painter.rect_stroke(
                                 rect,
                                 0.0,
-                                Stroke::new(1.0, Color32::from_gray(180)),
+                                Stroke::new(1.0, Color32::from_gray(195)),
                                 StrokeKind::Outside,
                             );
 
