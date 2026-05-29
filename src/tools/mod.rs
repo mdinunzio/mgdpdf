@@ -12,16 +12,20 @@
 pub mod form_fill;
 pub mod free_text;
 pub mod hand;
+pub mod highlight;
+
+use std::collections::HashMap;
 
 use egui::{Painter, Pos2, Sense, Ui};
 
 use crate::edit::{command::Command, EditSession, UndoStack};
-use crate::pdf::document::TextFieldWidget;
+use crate::pdf::document::{GlyphRect, TextFieldWidget};
 use crate::pdf::PageTransform;
 
 pub use form_fill::FormFillTool;
 pub use free_text::FreeTextTool;
 pub use hand::HandTool;
+pub use highlight::HighlightTool;
 
 /// One-page-scoped input event delivered to the active tool.
 #[derive(Copy, Clone, Debug)]
@@ -42,6 +46,8 @@ pub enum ToolEvent {
 pub struct ToolSettings {
     pub font_size: f32,
     pub text_color: [u8; 4],
+    /// Highlight fill colour (RGBA; alpha gives translucency).
+    pub highlight_color: [u8; 4],
 }
 
 impl Default for ToolSettings {
@@ -49,6 +55,7 @@ impl Default for ToolSettings {
         Self {
             font_size: 14.0,
             text_color: [0, 0, 0, 255],
+            highlight_color: [255, 235, 60, 110],
         }
     }
 }
@@ -60,6 +67,9 @@ pub struct ToolCtx<'a> {
     pub undo: &'a mut UndoStack,
     /// All text-field widgets in the open document, computed once on open.
     pub widgets: &'a [TextFieldWidget],
+    /// Per-page glyph rectangles for the text layer, populated lazily. Empty
+    /// for pages with no extractable text (scanned images).
+    pub glyphs: &'a HashMap<usize, Vec<GlyphRect>>,
     /// Styling for newly-created edits.
     pub settings: ToolSettings,
 }
@@ -135,6 +145,7 @@ impl ToolBox {
             Box::new(HandTool::default()),
             Box::new(FormFillTool::default()),
             Box::new(FreeTextTool::default()),
+            Box::new(HighlightTool::default()),
         ];
         Self { tools, active: 0 }
     }

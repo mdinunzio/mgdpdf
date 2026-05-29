@@ -1,5 +1,6 @@
 //! Top-level eframe App.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
@@ -8,7 +9,7 @@ use pdfium_render::prelude::Pdfium;
 use tracing::warn;
 
 use crate::edit::{EditSession, UndoStack};
-use crate::pdf::document::{EditBundle, FreeTextSpec, TextFieldWidget};
+use crate::pdf::document::{EditBundle, FreeTextSpec, GlyphRect, HighlightSpec, TextFieldWidget};
 use crate::pdf::{Document, TextureCache};
 use crate::tools::{ToolBox, ToolSettings};
 use crate::ui::page_view::{PageView, PageViewState};
@@ -35,6 +36,8 @@ pub struct App {
     undo: UndoStack,
     /// Cached text-field widgets for the open document. Rebuilt on each open.
     widgets: Vec<TextFieldWidget>,
+    /// Lazily-cached per-page glyph rects for highlight text selection.
+    glyphs: HashMap<usize, Vec<GlyphRect>>,
     /// Styling applied to newly-created edits (free-text font size + colour).
     tool_settings: ToolSettings,
 }
@@ -55,6 +58,7 @@ impl App {
             session: EditSession::new(0),
             undo: UndoStack::default(),
             widgets: Vec::new(),
+            glyphs: HashMap::new(),
             tool_settings: ToolSettings::default(),
         };
         if let Some(path) = initial_file {
@@ -68,6 +72,7 @@ impl App {
         match Document::open(self.pdfium, path) {
             Ok(doc) => {
                 self.widgets = doc.collect_text_widgets();
+                self.glyphs.clear();
                 self.session = EditSession::new(doc.page_count());
                 self.undo.clear();
                 self.doc = Some(doc);
@@ -117,6 +122,24 @@ impl App {
                 text: b.text.clone(),
                 font_size: b.font_size,
                 color: b.color,
+            })
+            .collect();
+        bundle.highlights = self
+            .session
+            .iter_highlights()
+            .map(|h| HighlightSpec {
+                page_index: h.page_index,
+                rects_pt: h
+                    .rects_pt
+                    .iter()
+                    .map(|r| crate::pdf::document::PdfRectPt {
+                        left: r[0],
+                        bottom: r[1],
+                        right: r[2],
+                        top: r[3],
+                    })
+                    .collect(),
+                color: h.color,
             })
             .collect();
 
@@ -272,6 +295,22 @@ impl eframe::App for App {
                     ui.separator();
                 }
 
+                // Highlight colour — only for the highlight tool.
+                if self.tools.active().id() == "highlight" {
+                    ui.label("Colour");
+                    let mut rgb = [
+                        self.tool_settings.highlight_color[0],
+                        self.tool_settings.highlight_color[1],
+                        self.tool_settings.highlight_color[2],
+                    ];
+                    if ui.color_edit_button_srgb(&mut rgb).changed() {
+                        // Preserve the existing translucency.
+                        let a = self.tool_settings.highlight_color[3];
+                        self.tool_settings.highlight_color = [rgb[0], rgb[1], rgb[2], a];
+                    }
+                    ui.separator();
+                }
+
                 if ui
                     .add_enabled(self.undo.can_undo(), egui::Button::new("Undo"))
                     .on_hover_text("Ctrl+Z")
@@ -318,6 +357,16 @@ impl eframe::App for App {
             });
         });
 
+        // Lazily extract glyph rects for highlight text-selection the first time
+        // the highlight tool is active. Done once per document; cleared on open.
+        if self.tools.active().id() == "highlight" && self.glyphs.is_empty() {
+            if let Some(doc) = &self.doc {
+                for page in 0..doc.page_count() {
+                    self.glyphs.insert(page, doc.collect_glyph_rects(page));
+                }
+            }
+        }
+
         egui::CentralPanel::default().show_inside(ui, |ui| {
             if let Some(msg) = &self.error {
                 ui.colored_label(egui::Color32::RED, msg);
@@ -337,6 +386,7 @@ impl eframe::App for App {
                             session: &mut self.session,
                             undo: &mut self.undo,
                             widgets: &self.widgets,
+                            glyphs: &self.glyphs,
                             settings: self.tool_settings,
                         },
                     );

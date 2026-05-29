@@ -26,7 +26,9 @@
       "PowerShell(cargo build 2>&1 | Select-Object -Last 8; cargo test --test free_text_roundtrip 2>&1 | Select-String -Pattern \"test result|panicked|error\\\\[\" | ForEach-Object { $_.ToString\\(\\) })",
       "PowerShell(cargo test --test free_text_roundtrip 2>&1 | Select-String -Pattern \"test result|panicked|assert|error\\\\[\" | ForEach-Object { $_.ToString\\(\\) })",
       "PowerShell(cargo build 2>&1 | Select-Object -Last 6; cargo test --quiet 2>&1 | Select-String -Pattern \"test result\" | ForEach-Object { $_.ToString\\(\\) })",
-      "PowerShell(cargo test --quiet 2>&1 | Select-String -Pattern \"test result\" | ForEach-Object { $_.ToString\\(\\) }; cargo build 2>&1 | Select-String -Pattern \"warning:\" | ForEach-Object { $_.ToString\\(\\) } | Sort-Object -Unique)"
+      "PowerShell(cargo test --quiet 2>&1 | Select-String -Pattern \"test result\" | ForEach-Object { $_.ToString\\(\\) }; cargo build 2>&1 | Select-String -Pattern \"warning:\" | ForEach-Object { $_.ToString\\(\\) } | Sort-Object -Unique)",
+      "Bash(gh pr create --base main --head phase-4 --title 'Phase 4: free-text tool' --body ' *)",
+      "Bash(gh pr *)"
     ]
   }
 }

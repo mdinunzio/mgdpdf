@@ -32,6 +32,15 @@ pub struct WidgetId {
     pub annotation_index: u32,
 }
 
+/// A single glyph's bounding box in PDF points (bottom-left origin). Used by
+/// the highlight tool to hit-test a drag selection against the text layer.
+#[derive(Copy, Clone, Debug)]
+pub struct GlyphRect {
+    pub rect_pt: PdfRectPt,
+    /// `true` for whitespace/control chars — usually excluded from highlights.
+    pub is_whitespace: bool,
+}
+
 /// Read-only snapshot of a single text-field widget. Authored once at document
 /// open by [`Document::collect_text_widgets`]; later updates flow back through
 /// [`Document::set_text_field_value`].
@@ -135,6 +144,51 @@ impl Document {
         out
     }
 
+    /// Returns each glyph's bounding box on `page_index`, in PDF points. Empty
+    /// for pages with no text layer (e.g. scanned images) — the highlight tool
+    /// uses that emptiness to fall back to a free-drawn rectangle.
+    pub fn collect_glyph_rects(&self, page_index: usize) -> Vec<GlyphRect> {
+        let Ok(page) = self.inner.pages().get(page_index as i32) else {
+            return Vec::new();
+        };
+        let Ok(text) = page.text() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for ch in text.chars().iter() {
+            let Ok(bounds) = ch.loose_bounds() else {
+                continue;
+            };
+            let is_whitespace = ch
+                .unicode_char()
+                .map(|c| c.is_whitespace())
+                .unwrap_or(true);
+            out.push(GlyphRect {
+                rect_pt: PdfRectPt {
+                    left: bounds.left().value,
+                    bottom: bounds.bottom().value,
+                    right: bounds.right().value,
+                    top: bounds.top().value,
+                },
+                is_whitespace,
+            });
+        }
+        out
+    }
+
+    /// `true` if `page_index` has any extractable text (a text layer).
+    #[allow(dead_code)]
+    pub fn page_has_text(&self, page_index: usize) -> bool {
+        let Ok(page) = self.inner.pages().get(page_index as i32) else {
+            return false;
+        };
+        let has_text = match page.text() {
+            Ok(t) => t.len() > 0,
+            Err(_) => false,
+        };
+        has_text
+    }
+
     /// Writes `value` into the text field identified by `id`. Persisted to disk
     /// only on [`Document::save_as`]. Returns an error if the widget does not
     /// resolve to a text field.
@@ -179,6 +233,11 @@ impl Document {
 
         for (widget, value) in &edits.form_fills {
             set_text_field_value_on(&mut scratch, *widget, value)?;
+        }
+        // Highlights first so they sit *under* any free text we add, and under
+        // the page's existing content where possible.
+        for hl in &edits.highlights {
+            add_highlight_on(&mut scratch, hl)?;
         }
         for ft in &edits.free_texts {
             add_free_text_on(&mut scratch, ft)?;
@@ -248,11 +307,23 @@ pub struct FreeTextSpec {
     pub color: [u8; 4],
 }
 
+/// A highlight to stamp onto a page: one or more translucent rectangles
+/// (PDF-space, bottom-left origin) sharing a colour. Text selection yields one
+/// rect per line; the scanned-page fallback yields a single dragged rect.
+#[derive(Clone, Debug)]
+pub struct HighlightSpec {
+    pub page_index: usize,
+    pub rects_pt: Vec<PdfRectPt>,
+    /// RGBA; alpha controls translucency of the highlight fill.
+    pub color: [u8; 4],
+}
+
 /// All edits to apply to a fresh copy of the source PDF on save.
 #[derive(Default)]
 pub struct EditBundle {
     pub form_fills: Vec<(WidgetId, String)>,
     pub free_texts: Vec<FreeTextSpec>,
+    pub highlights: Vec<HighlightSpec>,
 }
 
 fn set_text_field_value_on(
@@ -331,6 +402,41 @@ fn add_free_text_on(doc: &mut PdfDocument<'_>, spec: &FreeTextSpec) -> Result<()
         spec.color[3],
     ))?;
 
+    page.regenerate_content()?;
+    Ok(())
+}
+
+fn add_highlight_on(doc: &mut PdfDocument<'_>, spec: &HighlightSpec) -> Result<()> {
+    // Highlights are drawn as translucent filled rectangles in the page's
+    // content stream — same cross-viewer-safe approach as free text. (PDFium
+    // can't generate appearance streams for highlight *annotations*, so those
+    // would be invisible in Adobe.)
+    let fill = PdfColor::new(spec.color[0], spec.color[1], spec.color[2], spec.color[3]);
+
+    // Build detached path objects first (each borrows `doc` only briefly), then
+    // attach them to the page — avoids holding a page borrow across `new_rect`.
+    let mut objects = Vec::with_capacity(spec.rects_pt.len());
+    for r in &spec.rects_pt {
+        let rect = PdfRect::new(
+            PdfPoints::new(r.bottom),
+            PdfPoints::new(r.left),
+            PdfPoints::new(r.top),
+            PdfPoints::new(r.right),
+        );
+        let object = PdfPagePathObject::new_rect(doc, rect, None, None, Some(fill))?;
+        objects.push(object);
+    }
+
+    let mut page = doc
+        .pages_mut()
+        .get(spec.page_index as i32)
+        .with_context(|| format!("page index out of range: {}", spec.page_index))?;
+    page.set_content_regeneration_strategy(
+        PdfPageContentRegenerationStrategy::AutomaticOnEveryChange,
+    );
+    for object in objects {
+        page.objects_mut().add_path_object(object)?;
+    }
     page.regenerate_content()?;
     Ok(())
 }
