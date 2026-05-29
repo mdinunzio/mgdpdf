@@ -11,7 +11,7 @@
 ; without hijacking the user's default PDF association.
 
 #define MyAppName "mgdpdf"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.2.0"
 #define MyAppPublisher "Michael DiNunzio"
 #define MyAppExeName "mgdpdf.exe"
 ; Path to the built release binaries, relative to this script.
