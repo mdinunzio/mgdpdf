@@ -5,8 +5,9 @@ use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
 use image::{DynamicImage, GenericImageView, Rgba, RgbaImage};
 use tiny_skia::{Color, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
-/// Bundled script font for typed signatures (OFL-licensed).
-const SCRIPT_FONT: &[u8] = include_bytes!("../../assets/fonts/Caveat-Regular.ttf");
+/// Bundled script font for typed signatures (Great Vibes, OFL-licensed) — an
+/// elegant connected cursive that reads as a real signature.
+const SCRIPT_FONT: &[u8] = include_bytes!("../../assets/fonts/GreatVibes-Regular.ttf");
 
 /// One drawn stroke: a polyline in canvas pixel coordinates.
 pub type StrokePath = Vec<(f32, f32)>;

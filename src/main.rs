@@ -50,23 +50,23 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Registers the bundled Caveat script font under the family name "caveat" so
-/// the signature modal's typed preview matches the rendered output.
+/// Registers the bundled Great Vibes script font under the family name
+/// "signature" so the modal's typed preview matches the rendered output.
 fn install_script_font(ctx: &egui::Context) {
     use egui::{FontData, FontFamily};
 
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
-        "caveat".to_owned(),
+        "signature".to_owned(),
         std::sync::Arc::new(FontData::from_static(include_bytes!(
-            "../assets/fonts/Caveat-Regular.ttf"
+            "../assets/fonts/GreatVibes-Regular.ttf"
         ))),
     );
     fonts
         .families
-        .entry(FontFamily::Name("caveat".into()))
+        .entry(FontFamily::Name("signature".into()))
         .or_default()
-        .insert(0, "caveat".to_owned());
+        .insert(0, "signature".to_owned());
     ctx.set_fonts(fonts);
 }
 
