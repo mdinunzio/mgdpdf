@@ -170,6 +170,7 @@ impl PageView {
                             session,
                             undo,
                             widgets,
+                            glyphs,
                             settings,
                         };
                         tools
@@ -178,7 +179,8 @@ impl PageView {
                     });
 
                     dispatch_pointer_events(
-                        page_index, &response, &transform, tools, session, undo, widgets, settings,
+                        page_index, &response, &transform, tools, session, undo, widgets, glyphs,
+                        settings,
                     );
                 }
             });
@@ -196,12 +198,14 @@ fn dispatch_pointer_events(
     session: &mut EditSession,
     undo: &mut crate::edit::UndoStack,
     widgets: &[TextFieldWidget],
+    glyphs: &HashMap<usize, Vec<GlyphRect>>,
     settings: ToolSettings,
 ) {
     let mut ctx = ToolCtx {
         session,
         undo,
         widgets,
+        glyphs,
         settings,
     };
     if response.hovered() {

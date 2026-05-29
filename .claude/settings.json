@@ -28,7 +28,14 @@
       "PowerShell(cargo build 2>&1 | Select-Object -Last 6; cargo test --quiet 2>&1 | Select-String -Pattern \"test result\" | ForEach-Object { $_.ToString\\(\\) })",
       "PowerShell(cargo test --quiet 2>&1 | Select-String -Pattern \"test result\" | ForEach-Object { $_.ToString\\(\\) }; cargo build 2>&1 | Select-String -Pattern \"warning:\" | ForEach-Object { $_.ToString\\(\\) } | Sort-Object -Unique)",
       "Bash(gh pr create --base main --head phase-4 --title 'Phase 4: free-text tool' --body ' *)",
-      "Bash(gh pr *)"
+      "Bash(gh pr *)",
+      "PowerShell(cargo test --test highlight_roundtrip 2>&1 | Select-String -Pattern \"test result|panicked|assert|error\\\\[\" | ForEach-Object { $_.ToString\\(\\) })",
+      "PowerShell(cargo test --quiet 2>&1 | Select-String -Pattern \"test result\" | ForEach-Object { $_.ToString\\(\\) }; Write-Output \"--- warnings ---\"; cargo build 2>&1 | Select-String -Pattern \"warning:\" | ForEach-Object { $_.ToString\\(\\) } | Sort-Object -Unique)",
+      "PowerShell(cargo test 2>&1 | Select-String -Pattern \"running|test result|FAILED\" | ForEach-Object { $_.ToString\\(\\) })",
+      "PowerShell(cargo test 2>&1 | Select-String -Pattern \"test result|FAILED|panicked|assertion\" | ForEach-Object { $_.ToString\\(\\) })",
+      "PowerShell(cargo test 2>&1 | Out-File -Encoding utf8 test_out.txt; Get-Content test_out.txt | Select-String -Pattern \"test result|FAILED|panicked|left ==|assertion|error\\\\[|error:\" | ForEach-Object { $_.ToString\\(\\) }; Remove-Item test_out.txt)",
+      "PowerShell(cargo test 2>&1 | Out-File -Encoding utf8 test_out.txt; Get-Content test_out.txt | Select-String -Pattern \"test result|FAILED|panicked|error\\\\[|error:\" | ForEach-Object { $_.ToString\\(\\) }; Remove-Item test_out.txt)",
+      "PowerShell(cargo build 2>&1 | Out-File -Encoding utf8 b.txt; Get-Content b.txt | Select-String -Pattern \"warning:\" | ForEach-Object { $_.ToString\\(\\) } | Sort-Object -Unique; Remove-Item b.txt; $proc = Start-Process -FilePath \".\\\\target\\\\debug\\\\mgdpdf.exe\" -ArgumentList \"tests\\\\fixtures\\\\hello.pdf\" -PassThru -RedirectStandardOutput so.log -RedirectStandardError se.log; Start-Sleep -Seconds 4; if \\(-not $proc.HasExited\\) { Write-Output \"GUI OK \\(PID $\\($proc.Id\\)\\)\"; Stop-Process -Id $proc.Id -Force } else { Write-Output \"GUI FAIL exit $\\($proc.ExitCode\\)\"; Get-Content so.log,se.log -ErrorAction SilentlyContinue }; Remove-Item so.log,se.log -ErrorAction SilentlyContinue)"
     ]
   }
 }
