@@ -9,7 +9,7 @@ use crate::edit::EditSession;
 use crate::pdf::coords::PageTransform;
 use crate::pdf::document::{Document, TextFieldWidget};
 use crate::pdf::render::{TextureCache, ZoomBucket};
-use crate::tools::{ToolBox, ToolCtx, ToolEvent};
+use crate::tools::{ToolBox, ToolCtx, ToolEvent, ToolSettings};
 
 /// Space between consecutive pages, in logical pixels.
 const PAGE_GAP: f32 = 12.0;
@@ -24,6 +24,7 @@ pub struct PageViewState<'a> {
     pub session: &'a mut EditSession,
     pub undo: &'a mut crate::edit::UndoStack,
     pub widgets: &'a [TextFieldWidget],
+    pub settings: ToolSettings,
 }
 
 impl PageView {
@@ -38,6 +39,7 @@ impl PageView {
             session,
             undo,
             widgets,
+            settings,
         } = state;
 
         let pixels_per_point = ui.ctx().pixels_per_point();
@@ -129,6 +131,20 @@ impl PageView {
                                 StrokeKind::Outside,
                             );
                             tools.active().draw_overlay(page_index, &painter, &transform, session);
+
+                            // Free-text boxes are content: render them on every
+                            // page regardless of the active tool so they don't
+                            // vanish when switching tools. Skip when the
+                            // free-text tool is active — it draws live editable
+                            // versions itself (avoids double-drawing the text).
+                            if tools.active().id() != "free_text" {
+                                crate::tools::free_text::draw_free_text_content(
+                                    page_index,
+                                    &painter,
+                                    &transform,
+                                    session,
+                                );
+                            }
                         }
                         Err(_) => paint_placeholder(ui, rect),
                     }
@@ -139,6 +155,7 @@ impl PageView {
                             session,
                             undo,
                             widgets,
+                            settings,
                         };
                         tools
                             .active_mut()
@@ -146,7 +163,7 @@ impl PageView {
                     });
 
                     dispatch_pointer_events(
-                        page_index, &response, &transform, tools, session, undo, widgets,
+                        page_index, &response, &transform, tools, session, undo, widgets, settings,
                     );
                 }
             });
@@ -155,6 +172,7 @@ impl PageView {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dispatch_pointer_events(
     page_index: usize,
     response: &egui::Response,
@@ -163,11 +181,13 @@ fn dispatch_pointer_events(
     session: &mut EditSession,
     undo: &mut crate::edit::UndoStack,
     widgets: &[TextFieldWidget],
+    settings: ToolSettings,
 ) {
     let mut ctx = ToolCtx {
         session,
         undo,
         widgets,
+        settings,
     };
     if response.hovered() {
         if let Some(screen) = response.hover_pos() {

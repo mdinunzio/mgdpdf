@@ -10,6 +10,7 @@
 #![allow(dead_code)]
 
 pub mod form_fill;
+pub mod free_text;
 pub mod hand;
 
 use egui::{Painter, Pos2, Sense, Ui};
@@ -19,6 +20,7 @@ use crate::pdf::document::TextFieldWidget;
 use crate::pdf::PageTransform;
 
 pub use form_fill::FormFillTool;
+pub use free_text::FreeTextTool;
 pub use hand::HandTool;
 
 /// One-page-scoped input event delivered to the active tool.
@@ -34,6 +36,23 @@ pub enum ToolEvent {
     PointerLeave,
 }
 
+/// Styling applied to newly-created edits (free-text boxes, highlights). Lives
+/// in `App` and is set from the toolbar; passed to tools through [`ToolCtx`].
+#[derive(Copy, Clone, Debug)]
+pub struct ToolSettings {
+    pub font_size: f32,
+    pub text_color: [u8; 4],
+}
+
+impl Default for ToolSettings {
+    fn default() -> Self {
+        Self {
+            font_size: 14.0,
+            text_color: [0, 0, 0, 255],
+        }
+    }
+}
+
 /// Mutable bundle of state a tool may need. Held by `&mut` for the duration of
 /// a single event/draw call — never stored.
 pub struct ToolCtx<'a> {
@@ -41,6 +60,8 @@ pub struct ToolCtx<'a> {
     pub undo: &'a mut UndoStack,
     /// All text-field widgets in the open document, computed once on open.
     pub widgets: &'a [TextFieldWidget],
+    /// Styling for newly-created edits.
+    pub settings: ToolSettings,
 }
 
 impl ToolCtx<'_> {
@@ -113,6 +134,7 @@ impl ToolBox {
         let tools: Vec<Box<dyn Tool>> = vec![
             Box::new(HandTool::default()),
             Box::new(FormFillTool::default()),
+            Box::new(FreeTextTool::default()),
         ];
         Self { tools, active: 0 }
     }

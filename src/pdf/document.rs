@@ -139,35 +139,17 @@ impl Document {
     /// only on [`Document::save_as`]. Returns an error if the widget does not
     /// resolve to a text field.
     pub fn set_text_field_value(&mut self, id: WidgetId, value: &str) -> Result<()> {
-        let mut page = self
-            .inner
-            .pages_mut()
-            .get(id.page_index as i32)
-            .with_context(|| format!("page index out of range: {}", id.page_index))?;
-        let annotations = page.annotations_mut();
-        let mut annotation = annotations
-            .get(id.annotation_index as usize)
-            .with_context(|| {
-                format!(
-                    "annotation index out of range: page {} annotation {}",
-                    id.page_index, id.annotation_index
-                )
-            })?;
-        match &mut annotation {
-            PdfPageAnnotation::Widget(w) => {
-                let Some(field) = w.form_field_mut() else {
-                    anyhow::bail!("widget at {:?} has no form field", id);
-                };
-                match field {
-                    PdfFormField::Text(t) => {
-                        t.set_value(value)?;
-                        Ok(())
-                    }
-                    _ => anyhow::bail!("widget at {:?} is not a text field", id),
-                }
-            }
-            _ => anyhow::bail!("annotation at {:?} is not a widget", id),
-        }
+        set_text_field_value_on(&mut self.inner, id, value)
+    }
+
+    /// Number of annotations on a page — used by tests to verify a stamp landed.
+    #[allow(dead_code)]
+    pub fn annotation_count(&self, page_index: usize) -> usize {
+        self.inner
+            .pages()
+            .get(page_index as i32)
+            .map(|p| p.annotations().len())
+            .unwrap_or(0)
     }
 
     /// Writes the in-memory document to a new file. Does not modify the source
@@ -178,6 +160,33 @@ impl Document {
         self.inner
             .save_to_file(path)
             .with_context(|| format!("failed to save PDF: {}", path.display()))?;
+        Ok(())
+    }
+
+    /// Applies a set of edits to a **fresh copy** of the source PDF and writes
+    /// it to `out_path`. The working document (`self`) is left untouched, so
+    /// saving is idempotent and repeatable — calling it twice does not stamp
+    /// annotations twice. Form-fill values are idempotent; free-text boxes are
+    /// additive, which is why we must start from a clean copy each time.
+    pub fn save_with_edits(&self, out_path: impl AsRef<Path>, edits: &EditBundle) -> Result<()> {
+        let out_path = out_path.as_ref();
+
+        // Re-open the original from disk into a scratch document.
+        let mut scratch = self
+            .pdfium
+            .load_pdf_from_file(&self.path, None)
+            .with_context(|| format!("failed to reopen source PDF: {}", self.path.display()))?;
+
+        for (widget, value) in &edits.form_fills {
+            set_text_field_value_on(&mut scratch, *widget, value)?;
+        }
+        for ft in &edits.free_texts {
+            add_free_text_on(&mut scratch, ft)?;
+        }
+
+        scratch
+            .save_to_file(out_path)
+            .with_context(|| format!("failed to save PDF: {}", out_path.display()))?;
         Ok(())
     }
 
@@ -222,4 +231,106 @@ pub struct RgbaImage {
     pub height: u32,
     /// Tightly packed `width * height * 4` RGBA bytes (no row padding).
     pub pixels: Vec<u8>,
+}
+
+/// A free-text box to stamp onto a page, in PDF-space terms. Decouples the
+/// `pdf` layer from the `edit` layer — `App` translates `edit::FreeTextBox`
+/// into this on save.
+#[derive(Clone, Debug)]
+pub struct FreeTextSpec {
+    pub page_index: usize,
+    /// Top-left corner in PDF points.
+    pub origin_pt: [f32; 2],
+    /// Box size in PDF points (width, height).
+    pub size_pt: [f32; 2],
+    pub text: String,
+    pub font_size: f32,
+    pub color: [u8; 4],
+}
+
+/// All edits to apply to a fresh copy of the source PDF on save.
+#[derive(Default)]
+pub struct EditBundle {
+    pub form_fills: Vec<(WidgetId, String)>,
+    pub free_texts: Vec<FreeTextSpec>,
+}
+
+fn set_text_field_value_on(
+    doc: &mut PdfDocument<'_>,
+    id: WidgetId,
+    value: &str,
+) -> Result<()> {
+    let mut page = doc
+        .pages_mut()
+        .get(id.page_index as i32)
+        .with_context(|| format!("page index out of range: {}", id.page_index))?;
+    let annotations = page.annotations_mut();
+    let mut annotation = annotations
+        .get(id.annotation_index as usize)
+        .with_context(|| {
+            format!(
+                "annotation index out of range: page {} annotation {}",
+                id.page_index, id.annotation_index
+            )
+        })?;
+    match &mut annotation {
+        PdfPageAnnotation::Widget(w) => {
+            let Some(field) = w.form_field_mut() else {
+                anyhow::bail!("widget at {:?} has no form field", id);
+            };
+            match field {
+                PdfFormField::Text(t) => {
+                    t.set_value(value)?;
+                    Ok(())
+                }
+                _ => anyhow::bail!("widget at {:?} is not a text field", id),
+            }
+        }
+        _ => anyhow::bail!("annotation at {:?} is not a widget", id),
+    }
+}
+
+fn add_free_text_on(doc: &mut PdfDocument<'_>, spec: &FreeTextSpec) -> Result<()> {
+    // We draw the text as a real page *content* text object rather than a
+    // free-text annotation. PDFium's C API can't generate an appearance stream
+    // for free-text annotations, so annotation-based text renders in PDFium-
+    // based viewers (including ours) but is invisible in Adobe and others.
+    // A page text object is part of the page's drawing instructions, so it
+    // renders identically everywhere.
+    let font = doc.fonts_mut().helvetica();
+
+    let mut page = doc
+        .pages_mut()
+        .get(spec.page_index as i32)
+        .with_context(|| format!("page index out of range: {}", spec.page_index))?;
+
+    // Regenerate page content on change so the new object is baked into the
+    // saved content stream.
+    page.set_content_regeneration_strategy(
+        PdfPageContentRegenerationStrategy::AutomaticOnEveryChange,
+    );
+
+    // `origin_pt` is the box's top-left in PDF points; PDF text is positioned
+    // by its baseline, which sits ~`font_size` below the top.
+    let baseline_x = spec.origin_pt[0];
+    let baseline_y = spec.origin_pt[1] - spec.font_size;
+
+    let object = page.objects_mut().create_text_object(
+        PdfPoints::new(baseline_x),
+        PdfPoints::new(baseline_y),
+        &spec.text,
+        font,
+        PdfPoints::new(spec.font_size),
+    )?;
+    // `create_text_object` returns the object already attached to the page.
+    let mut object = object;
+    object.set_fill_color(PdfColor::new(
+        spec.color[0],
+        spec.color[1],
+        spec.color[2],
+        spec.color[3],
+    ))?;
+
+    page.regenerate_content()?;
+    Ok(())
 }
