@@ -8,7 +8,9 @@
 pub mod fill_form_field;
 pub mod free_text;
 pub mod highlight;
+pub mod signature;
 
 pub use fill_form_field::FillFormFieldCommand;
 pub use free_text::{AddFreeTextCommand, EditFreeTextCommand, MoveFreeTextCommand};
 pub use highlight::AddHighlightCommand;
+pub use signature::{AddSignatureCommand, MoveSignatureCommand};

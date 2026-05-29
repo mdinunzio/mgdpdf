@@ -13,10 +13,13 @@ pub mod form_fill;
 pub mod free_text;
 pub mod hand;
 pub mod highlight;
+pub mod signature;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use egui::{Painter, Pos2, Sense, Ui};
+use image::RgbaImage;
 
 use crate::edit::{command::Command, EditSession, UndoStack};
 use crate::pdf::document::{GlyphRect, TextFieldWidget};
@@ -26,6 +29,7 @@ pub use form_fill::FormFillTool;
 pub use free_text::FreeTextTool;
 pub use hand::HandTool;
 pub use highlight::HighlightTool;
+pub use signature::SignatureTool;
 
 /// One-page-scoped input event delivered to the active tool.
 #[derive(Copy, Clone, Debug)]
@@ -70,6 +74,9 @@ pub struct ToolCtx<'a> {
     /// Per-page glyph rectangles for the text layer, populated lazily. Empty
     /// for pages with no extractable text (scanned images).
     pub glyphs: &'a HashMap<usize, Vec<GlyphRect>>,
+    /// A signature captured in the modal and waiting to be placed. The
+    /// signature tool `take`s it on the next page click. `None` otherwise.
+    pub pending_signature: &'a mut Option<Arc<RgbaImage>>,
     /// Styling for newly-created edits.
     pub settings: ToolSettings,
 }
@@ -146,6 +153,7 @@ impl ToolBox {
             Box::new(FormFillTool::default()),
             Box::new(FreeTextTool::default()),
             Box::new(HighlightTool::default()),
+            Box::new(SignatureTool::default()),
         ];
         Self { tools, active: 0 }
     }

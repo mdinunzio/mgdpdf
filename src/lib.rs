@@ -5,5 +5,6 @@
 pub mod app;
 pub mod edit;
 pub mod pdf;
+pub mod signature;
 pub mod tools;
 pub mod ui;

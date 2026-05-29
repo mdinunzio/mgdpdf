@@ -14,6 +14,9 @@ pub mod command;
 pub mod commands;
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
+use image::RgbaImage;
 
 use crate::pdf::document::WidgetId;
 
@@ -59,6 +62,31 @@ pub struct Highlight {
     pub color: [u8; 4],
 }
 
+/// A placed signature: a transparent RGBA image stamped at a page rectangle.
+/// The image is shared via `Arc` so dragging/undo don't clone the bitmap.
+#[derive(Clone)]
+pub struct SignaturePlacement {
+    pub id: EditId,
+    pub page_index: usize,
+    /// Top-left corner in PDF points.
+    pub origin_pt: [f32; 2],
+    /// Rendered size in PDF points (width, height); preserves image aspect.
+    pub size_pt: [f32; 2],
+    pub image: Arc<RgbaImage>,
+}
+
+impl std::fmt::Debug for SignaturePlacement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SignaturePlacement")
+            .field("id", &self.id)
+            .field("page_index", &self.page_index)
+            .field("origin_pt", &self.origin_pt)
+            .field("size_pt", &self.size_pt)
+            .field("image", &format_args!("{}x{}", self.image.width(), self.image.height()))
+            .finish()
+    }
+}
+
 /// A pending edit to be committed to the PDF on save.
 #[derive(Clone, Debug)]
 pub enum Edit {
@@ -74,6 +102,8 @@ pub enum Edit {
     FreeText(FreeTextBox),
     /// A highlight (set of translucent rects) over the page.
     Highlight(Highlight),
+    /// A placed signature image.
+    Signature(SignaturePlacement),
 }
 
 impl Edit {
@@ -82,6 +112,7 @@ impl Edit {
             Edit::FormFill { id, .. } => *id,
             Edit::FreeText(b) => b.id,
             Edit::Highlight(h) => h.id,
+            Edit::Signature(s) => s.id,
         }
     }
 }
@@ -271,6 +302,64 @@ impl EditSession {
     pub fn iter_highlights(&self) -> impl Iterator<Item = &Highlight> {
         self.by_page.iter().flatten().filter_map(|e| match e {
             Edit::Highlight(h) => Some(h),
+            _ => None,
+        })
+    }
+
+    // --- Signature helpers -------------------------------------------------
+
+    /// Adds a signature placement and returns its id.
+    pub fn add_signature(&mut self, s: SignaturePlacement) -> EditId {
+        let id = s.id;
+        if let Some(page) = self.by_page.get_mut(s.page_index) {
+            page.push(Edit::Signature(s));
+        }
+        id
+    }
+
+    /// Removes the signature with `id` from `page_index`, returning it.
+    pub fn remove_signature(&mut self, page_index: usize, id: EditId) -> Option<SignaturePlacement> {
+        let page = self.by_page.get_mut(page_index)?;
+        let pos = page
+            .iter()
+            .position(|e| matches!(e, Edit::Signature(s) if s.id == id))?;
+        match page.remove(pos) {
+            Edit::Signature(s) => Some(s),
+            other => {
+                self.by_page[page_index].insert(pos, other);
+                None
+            }
+        }
+    }
+
+    /// Mutable access to a signature placement by id.
+    pub fn signature_mut(
+        &mut self,
+        page_index: usize,
+        id: EditId,
+    ) -> Option<&mut SignaturePlacement> {
+        self.by_page.get_mut(page_index)?.iter_mut().find_map(|e| match e {
+            Edit::Signature(s) if s.id == id => Some(s),
+            _ => None,
+        })
+    }
+
+    /// Iterates the signatures on a page in insertion order.
+    pub fn signatures_on(&self, page_index: usize) -> impl Iterator<Item = &SignaturePlacement> {
+        self.by_page
+            .get(page_index)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| match e {
+                Edit::Signature(s) => Some(s),
+                _ => None,
+            })
+    }
+
+    /// Iterates every signature across all pages.
+    pub fn iter_signatures(&self) -> impl Iterator<Item = &SignaturePlacement> {
+        self.by_page.iter().flatten().filter_map(|e| match e {
+            Edit::Signature(s) => Some(s),
             _ => None,
         })
     }
