@@ -1,16 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod app;
-mod edit;
-mod pdf;
-mod tools;
-mod ui;
-
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use eframe::egui;
+use mgdpdf::app;
 use pdfium_render::prelude::*;
 use tracing::info;
 

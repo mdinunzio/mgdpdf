@@ -8,6 +8,7 @@ use pdfium_render::prelude::Pdfium;
 use tracing::warn;
 
 use crate::edit::{EditSession, UndoStack};
+use crate::pdf::document::TextFieldWidget;
 use crate::pdf::{Document, TextureCache};
 use crate::tools::ToolBox;
 use crate::ui::page_view::{PageView, PageViewState};
@@ -25,11 +26,15 @@ pub struct App {
     /// 0-based index of the page nearest the viewport centre; updated each frame.
     current_page: usize,
     error: Option<String>,
+    status: Option<String>,
     pending_open_dialog: bool,
+    pending_save_as_dialog: bool,
 
     tools: ToolBox,
     session: EditSession,
     undo: UndoStack,
+    /// Cached text-field widgets for the open document. Rebuilt on each open.
+    widgets: Vec<TextFieldWidget>,
 }
 
 impl App {
@@ -41,10 +46,13 @@ impl App {
             zoom: DEFAULT_ZOOM,
             current_page: 0,
             error: None,
+            status: None,
             pending_open_dialog: false,
+            pending_save_as_dialog: false,
             tools: ToolBox::default(),
             session: EditSession::new(0),
             undo: UndoStack::default(),
+            widgets: Vec::new(),
         };
         if let Some(path) = initial_file {
             app.open_path(&path);
@@ -56,12 +64,14 @@ impl App {
         self.cache.clear();
         match Document::open(self.pdfium, path) {
             Ok(doc) => {
+                self.widgets = doc.collect_text_widgets();
                 self.session = EditSession::new(doc.page_count());
                 self.undo.clear();
                 self.doc = Some(doc);
                 self.current_page = 0;
                 self.zoom = DEFAULT_ZOOM;
                 self.error = None;
+                self.status = None;
             }
             Err(e) => {
                 let msg = format!("Failed to open {}: {e:#}", path.display());
@@ -80,6 +90,53 @@ impl App {
         }
     }
 
+    /// Pushes every pending edit into PDFium and writes the document to `path`.
+    /// Does not modify the source PDF unless `path` equals the source path
+    /// (Save vs Save As — the caller is responsible for that distinction).
+    fn save_to(&mut self, path: &Path) {
+        let Some(doc) = self.doc.as_mut() else {
+            return;
+        };
+        // Commit pending edits to PDFium.
+        let form_fills: Vec<(crate::pdf::document::WidgetId, String)> = self
+            .session
+            .iter_form_fills()
+            .map(|(id, v)| (id, v.to_string()))
+            .collect();
+        for (widget, value) in form_fills {
+            if let Err(e) = doc.set_text_field_value(widget, &value) {
+                let msg = format!("Failed to set form field {widget:?}: {e:#}");
+                warn!("{msg}");
+                self.error = Some(msg);
+                return;
+            }
+        }
+        if let Err(e) = doc.save_as(path) {
+            let msg = format!("Failed to save {}: {e:#}", path.display());
+            warn!("{msg}");
+            self.error = Some(msg);
+            return;
+        }
+        self.session.dirty = false;
+        self.status = Some(format!("Saved to {}", path.display()));
+    }
+
+    fn save_as_via_dialog(&mut self) {
+        let suggested = self
+            .doc
+            .as_ref()
+            .and_then(|d| d.path().file_stem().map(|s| s.to_string_lossy().to_string()))
+            .map(|stem| format!("{stem}-edited.pdf"))
+            .unwrap_or_else(|| "edited.pdf".to_string());
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("PDF", &["pdf"])
+            .set_file_name(&suggested)
+            .save_file()
+        {
+            self.save_to(&path);
+        }
+    }
+
     fn set_zoom(&mut self, new_zoom: f32) {
         self.zoom = new_zoom.clamp(MIN_ZOOM, MAX_ZOOM);
     }
@@ -92,33 +149,42 @@ impl App {
         }
 
         // Keyboard shortcuts.
-        let (open, zoom_in, zoom_out, zoom_reset, ctrl_scroll, undo, redo) = ctx.input_mut(|i| {
-            let open = i.consume_key(Modifiers::CTRL, Key::O);
-            let zoom_in = i.consume_key(Modifiers::CTRL, Key::Plus)
-                || i.consume_key(Modifiers::CTRL, Key::Equals);
-            let zoom_out = i.consume_key(Modifiers::CTRL, Key::Minus);
-            let zoom_reset = i.consume_key(Modifiers::CTRL, Key::Num0);
-            let undo = i.consume_key(Modifiers::CTRL, Key::Z);
-            let redo = i.consume_key(Modifiers::CTRL, Key::Y)
-                || i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::Z);
+        let (open, save, save_as, zoom_in, zoom_out, zoom_reset, ctrl_scroll, undo, redo) =
+            ctx.input_mut(|i| {
+                let open = i.consume_key(Modifiers::CTRL, Key::O);
+                let save = i.consume_key(Modifiers::CTRL, Key::S);
+                let save_as = i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::S);
+                let zoom_in = i.consume_key(Modifiers::CTRL, Key::Plus)
+                    || i.consume_key(Modifiers::CTRL, Key::Equals);
+                let zoom_out = i.consume_key(Modifiers::CTRL, Key::Minus);
+                let zoom_reset = i.consume_key(Modifiers::CTRL, Key::Num0);
+                let undo = i.consume_key(Modifiers::CTRL, Key::Z);
+                let redo = i.consume_key(Modifiers::CTRL, Key::Y)
+                    || i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::Z);
 
-            let ctrl_scroll = if i.modifiers.ctrl {
-                let dy = i.smooth_scroll_delta.y;
-                if dy.abs() > 0.5 {
-                    i.smooth_scroll_delta.y = 0.0;
-                    Some(dy)
+                let ctrl_scroll = if i.modifiers.ctrl {
+                    let dy = i.smooth_scroll_delta.y;
+                    if dy.abs() > 0.5 {
+                        i.smooth_scroll_delta.y = 0.0;
+                        Some(dy)
+                    } else {
+                        None
+                    }
                 } else {
                     None
-                }
-            } else {
-                None
-            };
+                };
 
-            (open, zoom_in, zoom_out, zoom_reset, ctrl_scroll, undo, redo)
-        });
+                (open, save, save_as, zoom_in, zoom_out, zoom_reset, ctrl_scroll, undo, redo)
+            });
 
         if open {
             self.pending_open_dialog = true;
+        }
+        // Ctrl+S → Save As by default. We intentionally don't overwrite the
+        // original — that's safer for the user, matches Adobe Reader's free
+        // tier behaviour, and follows the plan.
+        if save || save_as {
+            self.pending_save_as_dialog = true;
         }
         if zoom_in {
             self.set_zoom(self.zoom * ZOOM_STEP);
@@ -152,6 +218,14 @@ impl eframe::App for App {
             ui.horizontal(|ui| {
                 if ui.button("Open…").on_hover_text("Ctrl+O").clicked() {
                     self.pending_open_dialog = true;
+                }
+                let can_save = self.doc.is_some();
+                if ui
+                    .add_enabled(can_save, egui::Button::new("Save As…"))
+                    .on_hover_text("Ctrl+S (saves to a new file)")
+                    .clicked()
+                {
+                    self.pending_save_as_dialog = true;
                 }
                 ui.separator();
 
@@ -218,6 +292,8 @@ impl eframe::App for App {
         egui::CentralPanel::default().show_inside(ui, |ui| {
             if let Some(msg) = &self.error {
                 ui.colored_label(egui::Color32::RED, msg);
+            } else if let Some(msg) = &self.status {
+                ui.colored_label(egui::Color32::from_rgb(60, 140, 60), msg);
             }
 
             match &self.doc {
@@ -231,6 +307,7 @@ impl eframe::App for App {
                             tools: &mut self.tools,
                             session: &mut self.session,
                             undo: &mut self.undo,
+                            widgets: &self.widgets,
                         },
                     );
                 }
@@ -244,6 +321,9 @@ impl eframe::App for App {
 
         if std::mem::take(&mut self.pending_open_dialog) {
             self.open_via_dialog();
+        }
+        if std::mem::take(&mut self.pending_save_as_dialog) {
+            self.save_as_via_dialog();
         }
     }
 }

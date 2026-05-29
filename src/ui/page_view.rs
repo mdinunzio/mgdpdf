@@ -3,13 +3,13 @@
 //! dispatches pointer events to the tool for the page under the cursor.
 
 use eframe::egui;
-use egui::{Color32, Pos2, Rect, ScrollArea, Sense, Stroke, StrokeKind, Vec2};
+use egui::{Color32, Pos2, Rect, ScrollArea, Stroke, StrokeKind, Vec2};
 
 use crate::edit::EditSession;
 use crate::pdf::coords::PageTransform;
-use crate::pdf::document::Document;
+use crate::pdf::document::{Document, TextFieldWidget};
 use crate::pdf::render::{TextureCache, ZoomBucket};
-use crate::tools::{ToolCtx, ToolEvent, ToolBox};
+use crate::tools::{ToolBox, ToolCtx, ToolEvent};
 
 /// Space between consecutive pages, in logical pixels.
 const PAGE_GAP: f32 = 12.0;
@@ -23,6 +23,7 @@ pub struct PageViewState<'a> {
     pub tools: &'a mut ToolBox,
     pub session: &'a mut EditSession,
     pub undo: &'a mut crate::edit::UndoStack,
+    pub widgets: &'a [TextFieldWidget],
 }
 
 impl PageView {
@@ -36,6 +37,7 @@ impl PageView {
             tools,
             session,
             undo,
+            widgets,
         } = state;
 
         let pixels_per_point = ui.ctx().pixels_per_point();
@@ -43,96 +45,110 @@ impl PageView {
 
         let mut current_page = 0usize;
 
-        ScrollArea::both()
+        // Pre-compute each page's logical (point*zoom) height and the running
+        // y-offset of its top edge within the scroll content. This lets us tell
+        // the ScrollArea the exact total height up front (so the scrollbar is
+        // correct) and position pages by absolute offset rather than relying on
+        // sequential `allocate` calls — which is what `show_viewport` wants.
+        let page_count = doc.page_count();
+        let mut tops = Vec::with_capacity(page_count);
+        let mut sizes = Vec::with_capacity(page_count);
+        let mut running = 0.0f32;
+        for i in 0..page_count {
+            let size = doc.page_size_pt(i).unwrap_or(crate::pdf::document::PageSizePt {
+                width: 612.0,
+                height: 792.0,
+            });
+            let logical = Vec2::new(size.width * zoom, size.height * zoom);
+            tops.push(running);
+            sizes.push((size, logical));
+            running += logical.y + PAGE_GAP;
+        }
+        let total_height = running.max(0.0);
+
+        ScrollArea::vertical()
             .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.vertical_centered(|ui| {
-                    for page_index in 0..doc.page_count() {
-                        let Some(size_pt) = doc.page_size_pt(page_index) else {
-                            continue;
-                        };
-                        let logical_w = size_pt.width * zoom;
-                        let logical_h = size_pt.height * zoom;
-                        let desired = Vec2::new(logical_w, logical_h);
+            .show_viewport(ui, |ui, viewport| {
+                // Reserve the full scrollable height so the scrollbar tracks the
+                // whole document, not just the visible page.
+                ui.set_height(total_height);
+                let content_top = ui.min_rect().top();
+                let viewport_width = ui.available_width();
 
-                        // Sense::click_and_drag lets us capture pointer events
-                        // on the page even while the scroll view is active.
-                        let (rect, response) = ui.allocate_exact_size(
-                            desired,
-                            Sense::click_and_drag(),
-                        );
+                for page_index in 0..page_count {
+                    let (size_pt, logical) = sizes[page_index];
+                    let top_y = content_top + tops[page_index];
+                    let left_pad = ((viewport_width - logical.x) * 0.5).max(0.0);
+                    let min = Pos2::new(ui.min_rect().left() + left_pad, top_y);
+                    let rect = Rect::from_min_size(min, logical);
 
-                        let transform = PageTransform::new(
-                            Vec2::new(size_pt.width, size_pt.height),
-                            rect,
-                        );
+                    // Cull pages outside the visible viewport (+ a margin). The
+                    // viewport rect is content-relative, so compare against the
+                    // page's content-relative band.
+                    let page_band_top = tops[page_index];
+                    let page_band_bottom = page_band_top + logical.y;
+                    let margin = viewport.height();
+                    let visible = page_band_bottom >= viewport.min.y - margin
+                        && page_band_top <= viewport.max.y + margin;
+                    if !visible {
+                        continue;
+                    }
 
-                        // Track viewport-centre page for the status bar.
-                        let visible = ui.clip_rect();
-                        if rect.center().y >= visible.top()
-                            && rect.center().y <= visible.bottom()
-                        {
-                            current_page = page_index;
+                    let transform = PageTransform::new(
+                        Vec2::new(size_pt.width, size_pt.height),
+                        rect,
+                    );
+
+                    // Page nearest the viewport centre → status bar.
+                    let viewport_centre = (viewport.min.y + viewport.max.y) * 0.5;
+                    if page_band_top <= viewport_centre && page_band_bottom >= viewport_centre {
+                        current_page = page_index;
+                    }
+
+                    // Interaction surface for this page (sense set by the tool).
+                    let sense = tools.active().page_sense();
+                    let response = ui.interact(
+                        rect,
+                        egui::Id::new(("mgdpdf::page", page_index)),
+                        sense,
+                    );
+
+                    match cache.get_or_render(ui.ctx(), doc, page_index, bucket, pixels_per_point) {
+                        Ok(page_tex) => {
+                            let painter = ui.painter_at(rect);
+                            painter.image(
+                                page_tex.texture.id(),
+                                rect,
+                                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                                Color32::WHITE,
+                            );
+                            painter.rect_stroke(
+                                rect,
+                                0.0,
+                                Stroke::new(1.0, Color32::from_gray(180)),
+                                StrokeKind::Outside,
+                            );
+                            tools.active().draw_overlay(page_index, &painter, &transform, session);
                         }
+                        Err(_) => paint_placeholder(ui, rect),
+                    }
 
-                        // Cheap visibility check: skip painting (and texture
-                        // upload) for pages outside the viewport + one screen
-                        // of margin in either direction.
-                        if !is_in_viewport(visible, rect) {
-                            paint_placeholder(ui, rect);
-                            ui.add_space(PAGE_GAP);
-                            continue;
-                        }
-
-                        match cache.get_or_render(
-                            ui.ctx(),
-                            doc,
-                            page_index,
-                            bucket,
-                            pixels_per_point,
-                        ) {
-                            Ok(page_tex) => {
-                                let painter = ui.painter_at(rect);
-                                painter.image(
-                                    page_tex.texture.id(),
-                                    rect,
-                                    Rect::from_min_max(
-                                        Pos2::ZERO,
-                                        Pos2::new(1.0, 1.0),
-                                    ),
-                                    Color32::WHITE,
-                                );
-                                painter.rect_stroke(
-                                    rect,
-                                    0.0,
-                                    Stroke::new(1.0, Color32::from_gray(180)),
-                                    StrokeKind::Outside,
-                                );
-
-                                // Tool overlay (drawn on top of the bitmap).
-                                tools.active().draw_overlay(
-                                    page_index,
-                                    &painter,
-                                    &transform,
-                                    session,
-                                );
-                            }
-                            Err(_) => paint_placeholder(ui, rect),
-                        }
-
-                        // Dispatch pointer events to the active tool.
-                        dispatch_pointer_events(
-                            page_index,
-                            &response,
-                            &transform,
-                            tools,
+                    // Interactive overlay (text inputs, drag handles, etc).
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                        let mut ctx = ToolCtx {
                             session,
                             undo,
-                        );
+                            widgets,
+                        };
+                        tools
+                            .active_mut()
+                            .draw_interactive(page_index, ui, &transform, &mut ctx);
+                    });
 
-                        ui.add_space(PAGE_GAP);
-                    }
-                });
+                    dispatch_pointer_events(
+                        page_index, &response, &transform, tools, session, undo, widgets,
+                    );
+                }
             });
 
         current_page
@@ -146,8 +162,13 @@ fn dispatch_pointer_events(
     tools: &mut ToolBox,
     session: &mut EditSession,
     undo: &mut crate::edit::UndoStack,
+    widgets: &[TextFieldWidget],
 ) {
-    let mut ctx = ToolCtx { session, undo };
+    let mut ctx = ToolCtx {
+        session,
+        undo,
+        widgets,
+    };
     if response.hovered() {
         if let Some(screen) = response.hover_pos() {
             let pdf = transform.screen_to_pdf(screen);
@@ -176,12 +197,6 @@ fn dispatch_pointer_events(
                 .on_event(page_index, ToolEvent::PointerUp { pdf }, &mut ctx);
         }
     }
-}
-
-fn is_in_viewport(clip: Rect, rect: Rect) -> bool {
-    // Add a margin so we render the next page just below the fold.
-    let expanded = clip.expand(rect.height().min(1500.0));
-    expanded.intersects(rect)
 }
 
 fn paint_placeholder(ui: &egui::Ui, rect: Rect) {

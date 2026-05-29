@@ -6,6 +6,7 @@
 
 pub mod coords;
 pub mod document;
+pub mod forms;
 pub mod render;
 
 pub use coords::PageTransform;

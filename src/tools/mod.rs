@@ -9,13 +9,16 @@
 //! the whole module — they become live once Phases 3+ register real tools.
 #![allow(dead_code)]
 
+pub mod form_fill;
 pub mod hand;
 
-use egui::{Painter, Pos2};
+use egui::{Painter, Pos2, Sense, Ui};
 
-use crate::edit::{EditSession, UndoStack};
+use crate::edit::{command::Command, EditSession, UndoStack};
+use crate::pdf::document::TextFieldWidget;
 use crate::pdf::PageTransform;
 
+pub use form_fill::FormFillTool;
 pub use hand::HandTool;
 
 /// One-page-scoped input event delivered to the active tool.
@@ -36,6 +39,15 @@ pub enum ToolEvent {
 pub struct ToolCtx<'a> {
     pub session: &'a mut EditSession,
     pub undo: &'a mut UndoStack,
+    /// All text-field widgets in the open document, computed once on open.
+    pub widgets: &'a [TextFieldWidget],
+}
+
+impl ToolCtx<'_> {
+    /// Pushes a reversible command through the undo stack and applies it.
+    pub fn run<C: Command>(&mut self, command: C) {
+        self.undo.push_apply(Box::new(command), self.session);
+    }
 }
 
 /// A user-selectable editing mode (pan/zoom, form fill, free text, etc.).
@@ -50,15 +62,36 @@ pub trait Tool {
     /// tools only care about a subset.
     fn on_event(&mut self, _page_index: usize, _event: ToolEvent, _ctx: &mut ToolCtx<'_>) {}
 
-    /// Draws the tool's overlay for one visible page. Called after the page
-    /// bitmap is painted, with `painter` clipped to the page's screen rect.
-    /// The default draws nothing.
+    /// What kind of input the page background should accept while this tool
+    /// is active. Default is `hover` only — so click-drag passes through to
+    /// the surrounding `ScrollArea` and the user can pan/scroll. Tools that
+    /// need to detect clicks or drags on the bare page (free-text placement,
+    /// highlight selection, signature stamp) override to `click_and_drag`.
+    fn page_sense(&self) -> Sense {
+        Sense::hover()
+    }
+
+    /// Draws the tool's non-interactive overlay for one visible page. Called
+    /// after the page bitmap is painted, with `painter` clipped to the page's
+    /// screen rect. The default draws nothing.
     fn draw_overlay(
         &self,
         _page_index: usize,
         _painter: &Painter,
         _transform: &PageTransform,
         _session: &EditSession,
+    ) {
+    }
+
+    /// Like [`draw_overlay`] but allowed to add interactive widgets (text
+    /// inputs, drag handles, etc.) via `ui`. Called per visible page after
+    /// `draw_overlay`. `ui` is scoped to the page's screen rect.
+    fn draw_interactive(
+        &mut self,
+        _page_index: usize,
+        _ui: &mut Ui,
+        _transform: &PageTransform,
+        _ctx: &mut ToolCtx<'_>,
     ) {
     }
 }
@@ -77,7 +110,10 @@ impl Default for ToolBox {
 
 impl ToolBox {
     pub fn new() -> Self {
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(HandTool::default())];
+        let tools: Vec<Box<dyn Tool>> = vec![
+            Box::new(HandTool::default()),
+            Box::new(FormFillTool::default()),
+        ];
         Self { tools, active: 0 }
     }
 
